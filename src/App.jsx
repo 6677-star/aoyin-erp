@@ -24,6 +24,8 @@ import { supabase } from './lib/supabase';
 
 const SYSTEM_NAME = '奥印ERP管理系统';
 const SYSTEM_SUBTITLE = '企业进销存与仓储管理平台';
+const APP_VERSION = __APP_VERSION__;
+const BUILD_TIME = __BUILD_TIME__;
 
 const emptyProduct = {
   name: '',
@@ -156,6 +158,59 @@ function splitAmountCells(value) {
   const [integerPart, decimalPart] = fixed.split('.');
   const integerDigits = integerPart.padStart(6, ' ').slice(-6).split('');
   return [...integerDigits, decimalPart[0], decimalPart[1]].map((digit) => (digit === ' ' ? '' : digit));
+}
+
+function compactTimestamp() {
+  const now = new Date();
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+}
+
+function parseLogRemark(remark = '') {
+  const text = String(remark || '');
+  const read = (label) => {
+    const match = text.match(new RegExp(`${label}[：:]\\s*([^；;]+)`));
+    return match?.[1]?.trim() || '';
+  };
+  const priceText = read('单价');
+  return {
+    customer: read('客户'),
+    supplier: read('供应商'),
+    price: priceText ? Number(priceText.replace(/[^\d.-]/g, '')) : 0,
+  };
+}
+
+const defaultPrintSettings = {
+  paperType: 'a4',
+  showLogo: true,
+  logoSize: 150,
+  showAmountGrid: true,
+};
+
+function loadPrintSettings() {
+  try {
+    return { ...defaultPrintSettings, ...JSON.parse(localStorage.getItem('deliveryPrintSettings') || '{}') };
+  } catch {
+    return defaultPrintSettings;
+  }
+}
+
+function logSupabaseDeleteError(error, productId, context) {
+  console.error('商品删除失败', {
+    context,
+    productId,
+    message: error?.message,
+    code: error?.code,
+    details: error?.details,
+    hint: error?.hint,
+    status: error?.status,
+    supabaseError: error,
+  });
+}
+
+function isForeignKeyError(error) {
+  const text = `${error?.code || ''} ${error?.message || ''} ${error?.details || ''}`.toLowerCase();
+  return text.includes('23503') || text.includes('foreign key') || text.includes('violates foreign key constraint');
 }
 
 function matchesQuery(row, query, fields) {
@@ -306,6 +361,7 @@ function ErpApp({ currentUser, onLogout }) {
   const [userModal, setUserModal] = useState(null);
   const [deliveryModal, setDeliveryModal] = useState(null);
   const [printOrder, setPrintOrder] = useState(null);
+  const [printStockDocument, setPrintStockDocument] = useState(null);
 
   const operator = currentUser.real_name || currentUser.username || '系统用户';
 
@@ -320,14 +376,14 @@ function ErpApp({ currentUser, onLogout }) {
       companyProfilesResult,
       usersResult,
     ] = await Promise.all([
-      supabase.from('products').select('*').order('created_at', { ascending: false }),
+      supabase.from('products').select('*').eq('is_deleted', false).order('created_at', { ascending: false }),
       supabase.from('customers').select('*').order('created_at', { ascending: false }),
       supabase.from('suppliers').select('*').order('created_at', { ascending: false }),
       supabase
         .from('stock_logs')
         .select('*, products(name, sku, unit)')
         .order('created_at', { ascending: false })
-        .limit(300),
+        .limit(5000),
       supabase
         .from('delivery_orders')
         .select('*, delivery_order_items(*)')
@@ -403,11 +459,61 @@ function ErpApp({ currentUser, onLogout }) {
   }
 
   async function deleteProduct(product) {
-    if (!window.confirm(`确认删除商品「${product.name}」吗？`)) return;
-    await runAction(async () => {
+    try {
+      const [{ count: stockCount, error: stockError }, { count: deliveryCount, error: deliveryError }] = await Promise.all([
+        supabase.from('stock_logs').select('id', { count: 'exact', head: true }).eq('product_id', product.id),
+        supabase.from('delivery_order_items').select('id', { count: 'exact', head: true }).eq('product_id', product.id),
+      ]);
+      if (stockError || deliveryError) {
+        const error = stockError || deliveryError;
+        logSupabaseDeleteError(error, product.id, '检查商品业务引用');
+        throw error;
+      }
+
+      const hasBusinessRecords = Number(stockCount || 0) > 0 || Number(deliveryCount || 0) > 0;
+      if (hasBusinessRecords) {
+        const ok = window.confirm('该商品已有库存流水或单据记录，将进行安全删除，历史记录仍会保留，是否继续？');
+        if (!ok) return;
+        const { error } = await supabase
+          .from('products')
+          .update({ is_deleted: true, deleted_at: new Date().toISOString() })
+          .eq('id', product.id);
+        if (error) {
+          logSupabaseDeleteError(error, product.id, '安全删除商品');
+          throw error;
+        }
+        setToast({ type: 'success', text: '商品已安全删除，历史记录仍会保留。' });
+        await loadData();
+        return;
+      }
+
+      if (!window.confirm(`确认删除商品「${product.name}」吗？`)) return;
       const { error } = await supabase.from('products').delete().eq('id', product.id);
-      if (error) throw error;
-    }, '商品已删除。');
+      if (error) {
+        logSupabaseDeleteError(error, product.id, '物理删除商品');
+        if (isForeignKeyError(error)) {
+          const ok = window.confirm('该商品已有库存流水或单据记录，将进行安全删除，历史记录仍会保留，是否继续？');
+          if (!ok) return;
+          const { error: safeDeleteError } = await supabase
+            .from('products')
+            .update({ is_deleted: true, deleted_at: new Date().toISOString() })
+            .eq('id', product.id);
+          if (safeDeleteError) {
+            logSupabaseDeleteError(safeDeleteError, product.id, '物理删除失败后转安全删除');
+            throw safeDeleteError;
+          }
+          setToast({ type: 'success', text: '商品已安全删除，历史记录仍会保留。' });
+          await loadData();
+          return;
+        }
+        throw error;
+      }
+      setToast({ type: 'success', text: '商品已删除。' });
+      await loadData();
+    } catch (error) {
+      logSupabaseDeleteError(error, product.id, '删除商品总流程');
+      setToast({ type: 'error', text: error.message });
+    }
   }
 
   async function savePartner(type, partner) {
@@ -658,6 +764,7 @@ function ErpApp({ currentUser, onLogout }) {
             <div>
               <h1 className="text-lg font-semibold text-slate-950">{SYSTEM_NAME}</h1>
               <p className="text-xs text-slate-500">{operator}</p>
+              <p className="text-xs text-slate-400">版本：v{APP_VERSION} / 构建时间：{BUILD_TIME}</p>
             </div>
           </div>
           <button className="btn-secondary w-full sm:w-auto" onClick={onLogout}>
@@ -682,6 +789,7 @@ function ErpApp({ currentUser, onLogout }) {
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold text-slate-950">{SYSTEM_NAME}</p>
               <p className="truncate text-xs text-slate-500">{SYSTEM_SUBTITLE}</p>
+              <p className="truncate text-[11px] text-slate-400">v{APP_VERSION} · {BUILD_TIME}</p>
             </div>
           </div>
           {navItems.filter((item) => canAccess(currentUser, item.id)).map((item) => {
@@ -753,7 +861,9 @@ function ErpApp({ currentUser, onLogout }) {
               mode="purchase"
               partners={suppliers}
               products={products}
+              logs={logs}
               canSubmit={can(currentUser, 'purchaseStock')}
+              onPrint={() => setPrintStockDocument({ title: '采购入库单', type: 'purchase_in' })}
               onSubmit={(payload) => runAction(() => moveStock(payload), '库存已更新，采购流水已写入。')}
             />
           )}
@@ -764,6 +874,7 @@ function ErpApp({ currentUser, onLogout }) {
               products={products}
               logs={logs}
               canSubmit={can(currentUser, 'salesStock')}
+              onPrint={() => setPrintStockDocument({ title: '销售出库单', type: 'sale_out' })}
               onSubmit={(payload) => runAction(() => moveStock(payload), '库存已更新，销售流水已写入。')}
             />
           )}
@@ -868,6 +979,16 @@ function ErpApp({ currentUser, onLogout }) {
           order={printOrder}
           companyProfile={activeCompanyProfile}
           onClose={() => setPrintOrder(null)}
+        />
+      )}
+
+      {printStockDocument && (
+        <StockDocumentPrintModal
+          title={printStockDocument.title}
+          type={printStockDocument.type}
+          logs={logs}
+          companyProfile={activeCompanyProfile}
+          onClose={() => setPrintStockDocument(null)}
         />
       )}
     </div>
@@ -1212,7 +1333,7 @@ function LogoPreview({ url, small = false }) {
   );
 }
 
-function PurchaseSalesView({ mode, partners, products, logs = [], canSubmit, onSubmit }) {
+function PurchaseSalesView({ mode, partners, products, logs = [], canSubmit, onSubmit, onPrint }) {
   const isPurchase = mode === 'purchase';
   const title = isPurchase ? '采购管理' : '销售管理';
   const partnerLabel = isPurchase ? '供应商' : '客户';
@@ -1228,7 +1349,12 @@ function PurchaseSalesView({ mode, partners, products, logs = [], canSubmit, onS
       ];
 
   return (
-    <Panel title={title} subtitle="所有操作都会同步更新库存，并写入库存流水。" icon={icon}>
+    <Panel
+      title={title}
+      subtitle="所有操作都会同步更新库存，并写入库存流水。"
+      icon={icon}
+      action={<button className="btn-secondary" onClick={onPrint}><Printer size={16} />打印{isPurchase ? '采购入库单' : '销售出库单'}</button>}
+    >
       {canSubmit ? (
         <div className="grid gap-4 xl:grid-cols-2">
           {actions.map((action) => (
@@ -1387,16 +1513,46 @@ function DeliveryOrdersView({ orders, customers, products, canMutate, canDelete,
 }
 
 function InventoryView({ logs, products, canAdjust, onAdjust }) {
-  const [filters, setFilters] = useState({ productId: '', type: '', start: '', end: '' });
+  const [filters, setFilters] = useState({ productQuery: '', customer: '', supplier: '', type: '', start: '', end: '' });
   const [adjust, setAdjust] = useState({ productId: '', quantity: 0, remark: '' });
 
   const rows = logs.filter((log) => {
-    if (filters.productId && log.product_id !== filters.productId) return false;
+    const parsed = parseLogRemark(log.remark);
+    const productText = `${log.products?.name || ''} ${log.products?.sku || ''}`.toLowerCase();
+    if (filters.productQuery && !productText.includes(filters.productQuery.trim().toLowerCase())) return false;
+    if (filters.customer && !parsed.customer.toLowerCase().includes(filters.customer.trim().toLowerCase())) return false;
+    if (filters.supplier && !parsed.supplier.toLowerCase().includes(filters.supplier.trim().toLowerCase())) return false;
     if (filters.type && log.type !== filters.type) return false;
     if (filters.start && log.created_at < `${filters.start}T00:00:00`) return false;
     if (filters.end && log.created_at > `${filters.end}T23:59:59`) return false;
     return true;
   });
+
+  async function exportExcel() {
+    const XLSX = await import('xlsx');
+    const data = rows.map((log) => {
+      const parsed = parseLogRemark(log.remark);
+      const price = parsed.price || 0;
+      const quantity = Number(log.quantity || 0);
+      return {
+        日期: new Date(log.created_at).toLocaleString('zh-CN'),
+        商品编号: log.products?.sku || '',
+        商品名称: log.products?.name || '已删除商品',
+        客户: parsed.customer,
+        供应商: parsed.supplier,
+        类型: stockTypeLabels[log.type] || log.type,
+        数量: quantity,
+        单价: price,
+        金额: Number((quantity * price).toFixed(2)),
+        操作人: log.operator,
+        备注: log.remark || '',
+      };
+    });
+    const worksheet = XLSX.utils.json_to_sheet(data);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, '库存流水');
+    XLSX.writeFile(workbook, `库存流水_${compactTimestamp()}.xlsx`);
+  }
 
   function submitAdjust(event) {
     event.preventDefault();
@@ -1442,12 +1598,15 @@ function InventoryView({ logs, products, canAdjust, onAdjust }) {
       )}
 
       <Panel title="库存流水查询" subtitle="支持按商品、类型和日期筛选。" icon={ClipboardList}>
-        <div className="grid gap-3 md:grid-cols-4">
-          <Field label="商品">
-            <select className="input" value={filters.productId} onChange={(event) => setFilters({ ...filters, productId: event.target.value })}>
-              <option value="">全部商品</option>
-              {products.map((product) => <option key={product.id} value={product.id}>{product.name} / {product.sku}</option>)}
-            </select>
+        <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+          <Field label="商品名称 / SKU">
+            <input className="input" value={filters.productQuery} onChange={(event) => setFilters({ ...filters, productQuery: event.target.value })} placeholder="输入商品或 SKU" />
+          </Field>
+          <Field label="客户">
+            <input className="input" value={filters.customer} onChange={(event) => setFilters({ ...filters, customer: event.target.value })} placeholder="客户名称" />
+          </Field>
+          <Field label="供应商">
+            <input className="input" value={filters.supplier} onChange={(event) => setFilters({ ...filters, supplier: event.target.value })} placeholder="供应商名称" />
           </Field>
           <Field label="类型">
             <select className="input" value={filters.type} onChange={(event) => setFilters({ ...filters, type: event.target.value })}>
@@ -1461,6 +1620,9 @@ function InventoryView({ logs, products, canAdjust, onAdjust }) {
           <Field label="结束日期">
             <input className="input" type="date" value={filters.end} onChange={(event) => setFilters({ ...filters, end: event.target.value })} />
           </Field>
+        </div>
+        <div className="mt-4 flex justify-end">
+          <button className="btn-secondary" type="button" onClick={exportExcel}>导出 Excel</button>
         </div>
         <div className="mt-4 divide-y divide-slate-100">
           {rows.map((log) => <LogRow key={log.id} log={log} />)}
@@ -1782,6 +1944,7 @@ function DeliveryOrderModal({ initialOrder, customers, products, onClose, onSave
 
 function DeliveryPrintModal({ order, companyProfile, onClose }) {
   const printRef = useRef(null);
+  const [printSettings, setPrintSettings] = useState(loadPrintSettings);
   const items = order.delivery_order_items || order.items || [];
   const total = items.reduce((sum, item) => sum + calculateLineAmount(item), 0);
   const printCompany = {
@@ -1791,6 +1954,10 @@ function DeliveryPrintModal({ order, companyProfile, onClose }) {
     email: companyProfile?.email || '',
     logo_url: companyProfile?.logo_url || '',
   };
+
+  useEffect(() => {
+    localStorage.setItem('deliveryPrintSettings', JSON.stringify(printSettings));
+  }, [printSettings]);
 
   async function exportPdf() {
     const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
@@ -1809,19 +1976,46 @@ function DeliveryPrintModal({ order, companyProfile, onClose }) {
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/50 p-4 print:static print:bg-white print:p-0">
       <div className="mx-auto max-w-6xl rounded-lg bg-white p-4 shadow-xl print:max-w-none print:rounded-none print:p-0 print:shadow-none">
-        <div className="mb-4 flex flex-wrap justify-end gap-2 print:hidden">
+        <div className="mb-4 grid gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3 print:hidden md:grid-cols-5">
+          <Field label="打印纸张类型">
+            <select className="input" value={printSettings.paperType} onChange={(event) => setPrintSettings({ ...printSettings, paperType: event.target.value })}>
+              <option value="a4">A4纸张</option>
+              <option value="two-part">二联单</option>
+              <option value="triple">财务通用打印三联单</option>
+            </select>
+          </Field>
+          <Field label="Logo 大小">
+            <input className="input" type="number" min="80" max="220" value={printSettings.logoSize} onChange={(event) => setPrintSettings({ ...printSettings, logoSize: Number(event.target.value) })} />
+          </Field>
+          <label className="flex items-center gap-2 pt-7 text-sm text-slate-700">
+            <input type="checkbox" checked={printSettings.showLogo} onChange={(event) => setPrintSettings({ ...printSettings, showLogo: event.target.checked })} />
+            显示 Logo
+          </label>
+          <label className="flex items-center gap-2 pt-7 text-sm text-slate-700">
+            <input type="checkbox" checked={printSettings.showAmountGrid} onChange={(event) => setPrintSettings({ ...printSettings, showAmountGrid: event.target.checked })} />
+            显示金额分位格
+          </label>
+          <div className="flex flex-wrap items-end justify-end gap-2">
+            <button className="btn-secondary" onClick={exportPdf}><FileDown size={16} />导出 PDF</button>
+            <button className="btn-primary" onClick={() => window.print()}><Printer size={16} />打印</button>
+            <button className="btn-secondary" onClick={onClose}><X size={16} />关闭</button>
+          </div>
+        </div>
+        <div className="mb-4 hidden flex-wrap justify-end gap-2 print:hidden">
           <button className="btn-secondary" onClick={exportPdf}><FileDown size={16} />导出 PDF</button>
           <button className="btn-primary" onClick={() => window.print()}><Printer size={16} />打印</button>
           <button className="btn-secondary" onClick={onClose}><X size={16} />关闭</button>
         </div>
 
-        <article ref={printRef} className="delivery-print">
+        <article ref={printRef} className={`delivery-print paper-${printSettings.paperType}`}>
           <header className="delivery-header">
             <div className="logo-box">
-              {printCompany.logo_url ? (
-                <img className="delivery-logo" src={printCompany.logo_url} alt="公司 Logo" />
-              ) : (
-                <div className="delivery-logo-placeholder">LOGO</div>
+              {printSettings.showLogo && (
+                printCompany.logo_url ? (
+                  <img className="delivery-logo" src={printCompany.logo_url} alt="公司 Logo" style={{ width: `${printSettings.logoSize}px` }} />
+                ) : (
+                  <div className="delivery-logo-placeholder" style={{ width: `${printSettings.logoSize}px` }}>LOGO</div>
+                )
               )}
             </div>
             <div className="delivery-title">
@@ -1850,9 +2044,9 @@ function DeliveryPrintModal({ order, companyProfile, onClose }) {
               <col className="delivery-col-unit" />
               <col className="delivery-col-qty" />
               <col className="delivery-col-price" />
-              {Array.from({ length: 8 }).map((_, index) => (
-                <col key={index} className="delivery-col-money" />
-              ))}
+              {printSettings.showAmountGrid
+                ? Array.from({ length: 8 }).map((_, index) => <col key={index} className="delivery-col-money" />)
+                : <col className="delivery-col-amount" />}
               <col className="delivery-col-remark" />
             </colgroup>
             <thead>
@@ -1860,6 +2054,168 @@ function DeliveryPrintModal({ order, companyProfile, onClose }) {
                 <th rowSpan="2">序号</th>
                 <th rowSpan="2">产品编号</th>
                 <th rowSpan="2">产品名称</th>
+                <th rowSpan="2">单位</th>
+                <th rowSpan="2">数量</th>
+                <th rowSpan="2">单价</th>
+                <th colSpan={printSettings.showAmountGrid ? 8 : 1} rowSpan={printSettings.showAmountGrid ? 1 : 2}>金额</th>
+                <th rowSpan="2">备注</th>
+              </tr>
+              {printSettings.showAmountGrid && (
+                <tr>
+                  {['十', '万', '千', '百', '十', '元', '角', '分'].map((label, index) => (
+                    <th key={`${label}-${index}`} className="money-cell">{label}</th>
+                  ))}
+                </tr>
+              )}
+            </thead>
+            <tbody>
+              {Array.from({ length: Math.max(8, items.length) }).map((_, index) => {
+                const item = items[index];
+                const amountCells = splitAmountCells(calculateLineAmount(item));
+                return (
+                  <tr key={item?.id || index}>
+                    <td>{index + 1}</td>
+                    <td>{item?.product_sku || ''}</td>
+                    <td>{item?.product_name || ''}</td>
+                    <td>{item?.unit || ''}</td>
+                    <td>{item?.quantity || ''}</td>
+                    <td>{item ? formatMoney(item.price) : ''}</td>
+                    {printSettings.showAmountGrid
+                      ? amountCells.map((digit, digitIndex) => <td key={digitIndex} className="money-cell">{item ? digit : ''}</td>)
+                      : <td>{item ? formatMoney(calculateLineAmount(item)) : ''}</td>}
+                    <td>{item?.remark || ''}</td>
+                  </tr>
+                );
+              })}
+              <tr>
+                <td colSpan={printSettings.showAmountGrid ? 12 : 5} className="text-left">金额合计(大写)：{amountToChinese(total)}</td>
+                <td colSpan={printSettings.showAmountGrid ? 3 : 3} className="text-left">小写金额 ￥{formatMoney(total)}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <p className="mt-2 text-sm">以上货品请核对数量，如有质量问题，请在收货后3天内通知本公司，逾期恕不负责。</p>
+          <footer className="mt-5 grid grid-cols-2 gap-8 text-sm">
+            <div>送货单位及经手人（盖章）：</div>
+            <div>收货单位及经手人（盖章）：</div>
+          </footer>
+        </article>
+      </div>
+    </div>
+  );
+}
+
+function StockDocumentPrintModal({ title, type, logs, companyProfile, onClose }) {
+  const printRef = useRef(null);
+  const [printSettings, setPrintSettings] = useState(loadPrintSettings);
+  const rows = logs.filter((log) => log.type === type);
+  const items = rows.map((log) => {
+    const parsed = parseLogRemark(log.remark);
+    const quantity = Number(log.quantity || 0);
+    const price = Number(parsed.price || 0);
+    return {
+      id: log.id,
+      product_sku: log.products?.sku || '',
+      product_name: log.products?.name || '已删除商品',
+      unit: log.products?.unit || '',
+      quantity,
+      price,
+      amount: quantity * price,
+      remark: log.remark || '',
+    };
+  });
+  const total = items.reduce((sum, item) => sum + item.amount, 0);
+  const printCompany = {
+    company_name: companyProfile?.company_name || '未设置公司名称',
+    company_address: companyProfile?.company_address || '未设置公司地址',
+    contact_phone: companyProfile?.contact_phone || '',
+    email: companyProfile?.email || '',
+    logo_url: companyProfile?.logo_url || '',
+  };
+
+  useEffect(() => {
+    localStorage.setItem('deliveryPrintSettings', JSON.stringify(printSettings));
+  }, [printSettings]);
+
+  async function exportPdf() {
+    const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
+      import('html2canvas'),
+      import('jspdf'),
+    ]);
+    const canvas = await html2canvas(printRef.current, { scale: 2, backgroundColor: '#ffffff' });
+    const image = canvas.toDataURL('image/png');
+    const pdf = new jsPDF('l', 'mm', 'a4');
+    const width = pdf.internal.pageSize.getWidth();
+    const height = (canvas.height * width) / canvas.width;
+    pdf.addImage(image, 'PNG', 0, 0, width, height);
+    pdf.save(`${SYSTEM_NAME}-${title}-${compactTimestamp()}.pdf`);
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/50 p-4 print:static print:bg-white print:p-0">
+      <div className="mx-auto max-w-6xl rounded-lg bg-white p-4 shadow-xl print:max-w-none print:rounded-none print:p-0 print:shadow-none">
+        <div className="mb-4 grid gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3 print:hidden md:grid-cols-4">
+          <Field label="打印纸张类型">
+            <select className="input" value={printSettings.paperType} onChange={(event) => setPrintSettings({ ...printSettings, paperType: event.target.value })}>
+              <option value="a4">A4纸张</option>
+              <option value="two-part">二联单</option>
+              <option value="triple">财务通用打印三联单</option>
+            </select>
+          </Field>
+          <Field label="Logo 大小">
+            <input className="input" type="number" min="80" max="220" value={printSettings.logoSize} onChange={(event) => setPrintSettings({ ...printSettings, logoSize: Number(event.target.value) })} />
+          </Field>
+          <label className="flex items-center gap-2 pt-7 text-sm text-slate-700">
+            <input type="checkbox" checked={printSettings.showLogo} onChange={(event) => setPrintSettings({ ...printSettings, showLogo: event.target.checked })} />
+            显示 Logo
+          </label>
+          <div className="flex flex-wrap items-end justify-end gap-2">
+            <button className="btn-secondary" onClick={exportPdf}><FileDown size={16} />导出 PDF</button>
+            <button className="btn-primary" onClick={() => window.print()}><Printer size={16} />打印</button>
+            <button className="btn-secondary" onClick={onClose}><X size={16} />关闭</button>
+          </div>
+        </div>
+
+        <article ref={printRef} className={`delivery-print paper-${printSettings.paperType}`}>
+          <header className="delivery-header">
+            <div className="logo-box">
+              {printSettings.showLogo && (
+                printCompany.logo_url ? (
+                  <img className="delivery-logo" src={printCompany.logo_url} alt="公司 Logo" style={{ width: `${printSettings.logoSize}px` }} />
+                ) : (
+                  <div className="delivery-logo-placeholder" style={{ width: `${printSettings.logoSize}px` }}>LOGO</div>
+                )
+              )}
+            </div>
+            <div className="delivery-title">
+              <h1>{printCompany.company_name}</h1>
+              <p>
+                {printCompany.company_address}
+                {printCompany.contact_phone ? `  电话：${printCompany.contact_phone}` : ''}
+                {printCompany.email ? `  邮箱：${printCompany.email}` : ''}
+              </p>
+              <h2>{title}</h2>
+            </div>
+            <div className="delivery-meta">
+              <p>制 单 人：系统管理员</p>
+              <p>打印日期：{todayDate()}</p>
+            </div>
+          </header>
+
+          <table className="delivery-table mt-3">
+            <colgroup>
+              <col className="delivery-col-sku" />
+              <col className="delivery-col-name" />
+              <col className="delivery-col-unit" />
+              <col className="delivery-col-qty" />
+              <col className="delivery-col-price" />
+              {Array.from({ length: 8 }).map((_, index) => <col key={index} className="delivery-col-money" />)}
+              <col className="delivery-col-remark" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th rowSpan="2">商品编号</th>
+                <th rowSpan="2">商品名称</th>
                 <th rowSpan="2">单位</th>
                 <th rowSpan="2">数量</th>
                 <th rowSpan="2">单价</th>
@@ -1875,34 +2231,25 @@ function DeliveryPrintModal({ order, companyProfile, onClose }) {
             <tbody>
               {Array.from({ length: Math.max(8, items.length) }).map((_, index) => {
                 const item = items[index];
-                const amountCells = splitAmountCells(calculateLineAmount(item));
+                const amountCells = splitAmountCells(item?.amount || 0);
                 return (
                   <tr key={item?.id || index}>
-                    <td>{index + 1}</td>
                     <td>{item?.product_sku || ''}</td>
                     <td>{item?.product_name || ''}</td>
                     <td>{item?.unit || ''}</td>
                     <td>{item?.quantity || ''}</td>
                     <td>{item ? formatMoney(item.price) : ''}</td>
-                    {amountCells.map((digit, digitIndex) => (
-                      <td key={digitIndex} className="money-cell">{item ? digit : ''}</td>
-                    ))}
+                    {amountCells.map((digit, digitIndex) => <td key={digitIndex} className="money-cell">{item ? digit : ''}</td>)}
                     <td>{item?.remark || ''}</td>
                   </tr>
                 );
               })}
               <tr>
-                <td colSpan="12" className="text-left">金额合计(大写)：{amountToChinese(total)}</td>
-                <td colSpan="3" className="text-left">小写金额 ￥{formatMoney(total)}</td>
+                <td colSpan="10" className="text-left">金额合计(大写)：{amountToChinese(total)}</td>
+                <td colSpan="4" className="text-left">小写金额 ￥{formatMoney(total)}</td>
               </tr>
             </tbody>
           </table>
-
-          <p className="mt-2 text-sm">以上货品请核对数量，如有质量问题，请在收货后3天内通知本公司，逾期恕不负责。</p>
-          <footer className="mt-5 grid grid-cols-2 gap-8 text-sm">
-            <div>送货单位及经手人（盖章）：</div>
-            <div>收货单位及经手人（盖章）：</div>
-          </footer>
         </article>
       </div>
     </div>

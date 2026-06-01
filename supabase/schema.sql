@@ -12,6 +12,12 @@ create table if not exists public.products (
   created_at timestamptz not null default now()
 );
 
+alter table public.products
+add column if not exists is_deleted boolean not null default false;
+
+alter table public.products
+add column if not exists deleted_at timestamptz;
+
 create table if not exists public.stock_logs (
   id bigint generated always as identity primary key,
   product_id bigint not null references public.products(id) on delete cascade,
@@ -77,6 +83,7 @@ create table if not exists public.delivery_order_items (
 create index if not exists idx_products_name on public.products using gin (to_tsvector('simple', name));
 create index if not exists idx_products_sku on public.products (sku);
 create unique index if not exists idx_products_sku_unique on public.products (sku);
+create index if not exists idx_products_is_deleted on public.products (is_deleted);
 create index if not exists idx_customers_name on public.customers (name);
 create index if not exists idx_suppliers_name on public.suppliers (name);
 create index if not exists idx_stock_logs_created_at on public.stock_logs (created_at desc);

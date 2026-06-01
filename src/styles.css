@@ -202,16 +202,86 @@ button {
   width: 26px;
 }
 
+.delivery-col-amount {
+  width: 110px;
+}
+
 .delivery-col-remark {
   width: 130px;
 }
 
+.paper-two-part {
+  padding: 14px 24px 34px;
+  font-size: 13px;
+}
+
+.paper-two-part .delivery-title h1 {
+  font-size: 23px;
+}
+
+.paper-two-part .delivery-title h2 {
+  font-size: 30px;
+}
+
+.paper-two-part .delivery-table {
+  font-size: 13px;
+}
+
+.paper-two-part .delivery-table th,
+.paper-two-part .delivery-table td {
+  height: 25px;
+  padding: 2px 4px;
+}
+
+.paper-triple {
+  padding: 12px 20px 28px;
+  font-family: "SimSun", "宋体", serif;
+  font-size: 12px;
+}
+
+.paper-triple .delivery-title h1 {
+  font-size: 22px;
+}
+
+.paper-triple .delivery-title h2 {
+  font-size: 28px;
+}
+
+.paper-triple .delivery-meta {
+  margin-top: 72px;
+  font-size: 12px;
+}
+
+.paper-triple .delivery-table {
+  font-size: 12px;
+}
+
+.paper-triple .delivery-table th,
+.paper-triple .delivery-table td {
+  height: 22px;
+  border-color: #000;
+  padding: 1px 3px;
+}
+
 @media print {
+  @page {
+    size: A4 landscape;
+    margin: 8mm;
+  }
+
   .delivery-print {
     width: 100%;
     max-width: none;
     border: 0;
     padding: 0;
+  }
+
+  .delivery-print.paper-two-part {
+    font-size: 13px;
+  }
+
+  .delivery-print.paper-triple {
+    font-size: 12px;
   }
 
   .delivery-table th,

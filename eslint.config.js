@@ -8,6 +8,16 @@ export default [
   },
   js.configs.recommended,
   {
+    files: ['*.config.js', 'vite.config.js'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: {
+        process: 'readonly',
+      },
+    },
+  },
+  {
     files: ['src/**/*.{js,jsx}'],
     languageOptions: {
       ecmaVersion: 2022,
@@ -17,6 +27,9 @@ export default [
         document: 'readonly',
         console: 'readonly',
         localStorage: 'readonly',
+        __APP_VERSION__: 'readonly',
+        __BUILD_TIME__: 'readonly',
+        process: 'readonly',
       },
       parserOptions: {
         ecmaFeatures: {
