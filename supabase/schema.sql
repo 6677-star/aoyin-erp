@@ -28,6 +28,19 @@ create table if not exists public.stock_logs (
   created_at timestamptz not null default now()
 );
 
+create table if not exists public.stock_log_delete_audit (
+  id bigint generated always as identity primary key,
+  stock_log_id bigint not null,
+  product_id bigint,
+  type text,
+  quantity integer,
+  operator text,
+  remark text,
+  stock_log_created_at timestamptz,
+  deleted_by text not null,
+  deleted_at timestamptz not null default now()
+);
+
 alter table public.stock_logs
 drop constraint if exists stock_logs_type_check;
 
@@ -89,6 +102,8 @@ create index if not exists idx_suppliers_name on public.suppliers (name);
 create index if not exists idx_stock_logs_created_at on public.stock_logs (created_at desc);
 create index if not exists idx_stock_logs_product_id on public.stock_logs (product_id);
 create index if not exists idx_stock_logs_type on public.stock_logs (type);
+create index if not exists idx_stock_log_delete_audit_deleted_at on public.stock_log_delete_audit (deleted_at desc);
+create index if not exists idx_stock_log_delete_audit_stock_log_id on public.stock_log_delete_audit (stock_log_id);
 create index if not exists idx_delivery_orders_order_no on public.delivery_orders (order_no);
 create index if not exists idx_delivery_orders_customer_id on public.delivery_orders (customer_id);
 create index if not exists idx_delivery_order_items_order_id on public.delivery_order_items (delivery_order_id);
@@ -96,6 +111,7 @@ create index if not exists idx_delivery_order_items_product_id on public.deliver
 
 alter table public.products enable row level security;
 alter table public.stock_logs enable row level security;
+alter table public.stock_log_delete_audit enable row level security;
 alter table public.customers enable row level security;
 alter table public.suppliers enable row level security;
 alter table public.delivery_orders enable row level security;
@@ -103,6 +119,10 @@ alter table public.delivery_order_items enable row level security;
 
 drop policy if exists "Authenticated users can manage products" on public.products;
 drop policy if exists "Authenticated users can manage stock logs" on public.stock_logs;
+drop policy if exists "Authenticated users can read stock logs" on public.stock_logs;
+drop policy if exists "Authenticated users can insert stock logs" on public.stock_logs;
+drop policy if exists "Authenticated users can update stock logs" on public.stock_logs;
+drop policy if exists "Authenticated users can read stock log delete audit" on public.stock_log_delete_audit;
 drop policy if exists "Authenticated users can manage customers" on public.customers;
 drop policy if exists "Authenticated users can manage suppliers" on public.suppliers;
 drop policy if exists "Authenticated users can manage delivery orders" on public.delivery_orders;
@@ -152,8 +172,17 @@ before insert on public.products
 for each row
 execute function public.generate_product_sku();
 
-create policy "Authenticated users can manage stock logs"
-on public.stock_logs for all to authenticated using (true) with check (true);
+create policy "Authenticated users can read stock logs"
+on public.stock_logs for select to authenticated using (true);
+
+create policy "Authenticated users can insert stock logs"
+on public.stock_logs for insert to authenticated with check (true);
+
+create policy "Authenticated users can update stock logs"
+on public.stock_logs for update to authenticated using (true) with check (true);
+
+create policy "Authenticated users can read stock log delete audit"
+on public.stock_log_delete_audit for select to authenticated using (true);
 
 create policy "Authenticated users can manage customers"
 on public.customers for all to authenticated using (true) with check (true);
@@ -288,8 +317,71 @@ insert into public.app_users (username, password, real_name, role, status)
 values ('admin', 'admin123', '系统管理员', 'admin', 'active')
 on conflict (username) do nothing;
 
+create or replace function public.delete_stock_log(
+  p_log_id bigint,
+  p_username text
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  current_user_role text;
+  target_log public.stock_logs%rowtype;
+begin
+  select role into current_user_role
+  from public.app_users
+  where username = p_username
+    and status = 'active';
+
+  if current_user_role is distinct from 'admin' then
+    raise exception '权限不足，只有管理员才能删除库存流水';
+  end if;
+
+  select * into target_log
+  from public.stock_logs
+  where id = p_log_id
+  for update;
+
+  if target_log.id is null then
+    raise exception '库存流水不存在或已被删除';
+  end if;
+
+  insert into public.stock_log_delete_audit (
+    stock_log_id,
+    product_id,
+    type,
+    quantity,
+    operator,
+    remark,
+    stock_log_created_at,
+    deleted_by
+  )
+  values (
+    target_log.id,
+    target_log.product_id,
+    target_log.type,
+    target_log.quantity,
+    target_log.operator,
+    target_log.remark,
+    target_log.created_at,
+    p_username
+  );
+
+  delete from public.stock_logs
+  where id = p_log_id;
+end;
+$$;
+
+grant execute on function public.delete_stock_log(bigint, text) to anon, authenticated;
+
 drop policy if exists "Development users can manage products" on public.products;
 drop policy if exists "Development users can manage stock logs" on public.stock_logs;
+drop policy if exists "Development users can read stock logs" on public.stock_logs;
+drop policy if exists "Development users can insert stock logs" on public.stock_logs;
+drop policy if exists "Development users can update stock logs" on public.stock_logs;
+drop policy if exists "Development users can read stock log delete audit" on public.stock_log_delete_audit;
 drop policy if exists "Development users can manage customers" on public.customers;
 drop policy if exists "Development users can manage suppliers" on public.suppliers;
 drop policy if exists "Development users can manage delivery orders" on public.delivery_orders;
@@ -298,8 +390,17 @@ drop policy if exists "Development users can manage delivery order items" on pub
 create policy "Development users can manage products"
 on public.products for all to anon, authenticated using (true) with check (true);
 
-create policy "Development users can manage stock logs"
-on public.stock_logs for all to anon, authenticated using (true) with check (true);
+create policy "Development users can read stock logs"
+on public.stock_logs for select to anon, authenticated using (true);
+
+create policy "Development users can insert stock logs"
+on public.stock_logs for insert to anon, authenticated with check (true);
+
+create policy "Development users can update stock logs"
+on public.stock_logs for update to anon, authenticated using (true) with check (true);
+
+create policy "Development users can read stock log delete audit"
+on public.stock_log_delete_audit for select to anon, authenticated using (true);
 
 create policy "Development users can manage customers"
 on public.customers for all to anon, authenticated using (true) with check (true);

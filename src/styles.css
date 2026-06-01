@@ -21,6 +21,16 @@ button {
 
 @media print {
   @page {
+    size: A4 portrait;
+    margin: 8mm;
+  }
+
+  @page portrait-page {
+    size: A4 portrait;
+    margin: 8mm;
+  }
+
+  @page landscape-page {
     size: A4 landscape;
     margin: 8mm;
   }
@@ -85,6 +95,82 @@ button {
   padding: 20px 28px 54px;
   color: #000;
   font-family: "SimSun", "Songti SC", serif;
+}
+
+.delivery-print.print-portrait {
+  width: 780px;
+  padding: 18px 20px 42px;
+}
+
+.delivery-print.print-landscape {
+  width: 1100px;
+}
+
+.delivery-print.print-portrait .delivery-header {
+  grid-template-columns: 150px 1fr 180px;
+  gap: 8px;
+}
+
+.delivery-print.print-portrait .delivery-title h1 {
+  font-size: 22px;
+}
+
+.delivery-print.print-portrait .delivery-title h2 {
+  font-size: 30px;
+  letter-spacing: 6px;
+}
+
+.delivery-print.print-portrait .delivery-title p,
+.delivery-print.print-portrait .delivery-meta,
+.delivery-print.print-portrait .delivery-table {
+  font-size: 12px;
+}
+
+.delivery-print.print-portrait .delivery-table th,
+.delivery-print.print-portrait .delivery-table td {
+  height: 26px;
+  padding: 2px 3px;
+}
+
+.delivery-print.print-portrait .delivery-col-index {
+  width: 42px;
+}
+
+.delivery-print.print-portrait .delivery-col-sku {
+  width: 94px;
+}
+
+.delivery-print.print-portrait .delivery-col-name {
+  width: 145px;
+}
+
+.delivery-print.print-portrait .delivery-col-unit {
+  width: 42px;
+}
+
+.delivery-print.print-portrait .delivery-col-qty {
+  width: 52px;
+}
+
+.delivery-print.print-portrait .delivery-col-price {
+  width: 64px;
+}
+
+.delivery-print.print-portrait .delivery-col-money {
+  width: 20px;
+}
+
+.delivery-print.print-portrait .delivery-table .money-cell {
+  width: 20px;
+  min-width: 20px;
+}
+
+.delivery-print.print-portrait .delivery-col-amount {
+  width: 82px;
+}
+
+.delivery-print.print-portrait .delivery-col-remark {
+  width: 86px;
 }
 
 .delivery-header {
@@ -215,6 +301,10 @@ button {
   font-size: 13px;
 }
 
+.paper-two-part.print-portrait {
+  padding: 12px 18px 30px;
+}
+
 .paper-two-part .delivery-title h1 {
   font-size: 23px;
 }
@@ -237,6 +327,10 @@ button {
   padding: 12px 20px 28px;
   font-family: "SimSun", "宋体", serif;
   font-size: 12px;
+}
+
+.paper-triple.print-portrait {
+  padding: 10px 16px 24px;
 }
 
 .paper-triple .delivery-title h1 {
@@ -265,6 +359,16 @@ button {
 
 @media print {
   @page {
+    size: A4 portrait;
+    margin: 8mm;
+  }
+
+  @page portrait-page {
+    size: A4 portrait;
+    margin: 8mm;
+  }
+
+  @page landscape-page {
     size: A4 landscape;
     margin: 8mm;
   }
@@ -282,6 +386,16 @@ button {
 
   .delivery-print.paper-triple {
     font-size: 12px;
+  }
+
+  .delivery-print.print-landscape {
+    width: 100%;
+    page: landscape-page;
+  }
+
+  .delivery-print.print-portrait {
+    width: 100%;
+    page: portrait-page;
   }
 
   .delivery-table th,

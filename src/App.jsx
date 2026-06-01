@@ -101,6 +101,7 @@ const actionPermissions = {
   mutateDelivery: ['admin', 'sales'],
   deleteDelivery: ['admin'],
   adjustStock: ['admin', 'warehouse'],
+  deleteStockLogs: ['admin'],
 };
 
 function can(user, action) {
@@ -180,19 +181,62 @@ function parseLogRemark(remark = '') {
   };
 }
 
+const PRINT_SETTINGS_KEY = 'erpPrintSettings';
+const LEGACY_PRINT_SETTINGS_KEY = 'deliveryPrintSettings';
+const printLogoSizes = {
+  small: 110,
+  medium: 150,
+  large: 190,
+};
 const defaultPrintSettings = {
   paperType: 'a4',
+  orientation: 'portrait',
   showLogo: true,
-  logoSize: 150,
+  logoSize: 'medium',
   showAmountGrid: true,
 };
 
+function normalizePrintSettings(settings = {}) {
+  const next = { ...defaultPrintSettings, ...settings };
+  if (!['a4', 'two-part', 'triple'].includes(next.paperType)) next.paperType = defaultPrintSettings.paperType;
+  if (!['portrait', 'landscape'].includes(next.orientation)) next.orientation = defaultPrintSettings.orientation;
+  if (typeof next.logoSize === 'number') {
+    if (next.logoSize <= 120) next.logoSize = 'small';
+    else if (next.logoSize >= 180) next.logoSize = 'large';
+    else next.logoSize = 'medium';
+  }
+  if (!Object.hasOwn(printLogoSizes, next.logoSize)) next.logoSize = defaultPrintSettings.logoSize;
+  next.showLogo = Boolean(next.showLogo);
+  next.showAmountGrid = next.showAmountGrid !== false;
+  return next;
+}
+
 function loadPrintSettings() {
   try {
-    return { ...defaultPrintSettings, ...JSON.parse(localStorage.getItem('deliveryPrintSettings') || '{}') };
+    const raw = localStorage.getItem(PRINT_SETTINGS_KEY) || localStorage.getItem(LEGACY_PRINT_SETTINGS_KEY) || '{}';
+    return normalizePrintSettings(JSON.parse(raw));
   } catch {
     return defaultPrintSettings;
   }
+}
+
+function savePrintSettings(settings) {
+  const normalized = normalizePrintSettings(settings);
+  localStorage.setItem(PRINT_SETTINGS_KEY, JSON.stringify(normalized));
+  localStorage.setItem(LEGACY_PRINT_SETTINGS_KEY, JSON.stringify(normalized));
+}
+
+function getLogoWidth(settings) {
+  return printLogoSizes[normalizePrintSettings(settings).logoSize];
+}
+
+function getPrintClass(settings) {
+  const normalized = normalizePrintSettings(settings);
+  return `delivery-print paper-${normalized.paperType} print-${normalized.orientation}`;
+}
+
+function getPdfOrientation(settings) {
+  return normalizePrintSettings(settings).orientation === 'landscape' ? 'l' : 'p';
 }
 
 function logSupabaseDeleteError(error, productId, context) {
@@ -655,6 +699,21 @@ function ErpApp({ currentUser, onLogout }) {
     if (error) throw error;
   }
 
+  async function deleteStockLog(log) {
+    if (!can(currentUser, 'deleteStockLogs')) {
+      setToast({ type: 'error', text: '权限不足，只有管理员才能删除库存流水' });
+      return;
+    }
+    if (!window.confirm('确认删除该库存流水吗？删除后会写入审计记录，便于后续追溯。')) return;
+    await runAction(async () => {
+      const { error } = await supabase.rpc('delete_stock_log', {
+        p_log_id: log.id,
+        p_username: currentUser.username,
+      });
+      if (error) throw error;
+    }, '库存流水已删除，操作已记录。');
+  }
+
   async function saveDeliveryOrder(order) {
     if (!order.customer_id) throw new Error('请选择客户。');
     if (!order.items.length) throw new Error('请至少添加一条商品明细。');
@@ -896,7 +955,9 @@ function ErpApp({ currentUser, onLogout }) {
               logs={logs}
               products={products}
               canAdjust={can(currentUser, 'adjustStock')}
+              canDelete={can(currentUser, 'deleteStockLogs')}
               onAdjust={(payload) => runAction(() => moveStock(payload), '库存调整已完成。')}
+              onDelete={deleteStockLog}
             />
           )}
           {activeTab === 'users' && (
@@ -1512,7 +1573,7 @@ function DeliveryOrdersView({ orders, customers, products, canMutate, canDelete,
   );
 }
 
-function InventoryView({ logs, products, canAdjust, onAdjust }) {
+function InventoryView({ logs, products, canAdjust, canDelete, onAdjust, onDelete }) {
   const [filters, setFilters] = useState({ productQuery: '', customer: '', supplier: '', type: '', start: '', end: '' });
   const [adjust, setAdjust] = useState({ productId: '', quantity: 0, remark: '' });
 
@@ -1625,7 +1686,7 @@ function InventoryView({ logs, products, canAdjust, onAdjust }) {
           <button className="btn-secondary" type="button" onClick={exportExcel}>导出 Excel</button>
         </div>
         <div className="mt-4 divide-y divide-slate-100">
-          {rows.map((log) => <LogRow key={log.id} log={log} />)}
+          {rows.map((log) => <LogRow key={log.id} log={log} canDelete={canDelete} onDelete={onDelete} />)}
         </div>
         {rows.length === 0 && <EmptyText text="暂无匹配流水。" />}
       </Panel>
@@ -1633,7 +1694,7 @@ function InventoryView({ logs, products, canAdjust, onAdjust }) {
   );
 }
 
-function LogRow({ log, compact = false }) {
+function LogRow({ log, compact = false, canDelete = false, onDelete }) {
   return (
     <div className={`flex flex-col gap-2 px-1 py-3 sm:flex-row sm:items-center sm:justify-between ${compact ? 'rounded-lg border border-slate-100 px-3' : ''}`}>
       <div>
@@ -1650,9 +1711,16 @@ function LogRow({ log, compact = false }) {
           </p>
         )}
       </div>
-      <div className="text-left sm:text-right">
-        <p className="font-semibold">{formatNumber(log.quantity)} {log.products?.unit || ''}</p>
-        <p className="text-xs text-slate-500">{new Date(log.created_at).toLocaleString('zh-CN')}</p>
+      <div className="flex items-center gap-3 text-left sm:text-right">
+        <div>
+          <p className="font-semibold">{formatNumber(log.quantity)} {log.products?.unit || ''}</p>
+          <p className="text-xs text-slate-500">{new Date(log.created_at).toLocaleString('zh-CN')}</p>
+        </div>
+        {canDelete && !compact && (
+          <button className="icon-button text-red-600" title="删除库存流水" onClick={() => onDelete?.(log)}>
+            <Trash2 size={16} />
+          </button>
+        )}
       </div>
     </div>
   );
@@ -1942,11 +2010,54 @@ function DeliveryOrderModal({ initialOrder, customers, products, onClose, onSave
   );
 }
 
+function PrintSettingsPanel({ printSettings, setPrintSettings, exportPdf, onClose }) {
+  const updateSetting = (key, value) => setPrintSettings(normalizePrintSettings({ ...printSettings, [key]: value }));
+
+  return (
+    <div className="mb-4 grid gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3 print:hidden md:grid-cols-6">
+      <Field label="打印纸张类型">
+        <select className="input" value={printSettings.paperType} onChange={(event) => updateSetting('paperType', event.target.value)}>
+          <option value="a4">A4标准纸</option>
+          <option value="two-part">送货单二联单</option>
+          <option value="triple">财务通用三联单</option>
+        </select>
+      </Field>
+      <Field label="打印方向">
+        <select className="input" value={printSettings.orientation} onChange={(event) => updateSetting('orientation', event.target.value)}>
+          <option value="portrait">竖版（Portrait）</option>
+          <option value="landscape">横版（Landscape）</option>
+        </select>
+      </Field>
+      <Field label="Logo 大小">
+        <select className="input" value={printSettings.logoSize} onChange={(event) => updateSetting('logoSize', event.target.value)}>
+          <option value="small">小</option>
+          <option value="medium">中</option>
+          <option value="large">大</option>
+        </select>
+      </Field>
+      <label className="flex items-center gap-2 pt-7 text-sm text-slate-700">
+        <input type="checkbox" checked={printSettings.showLogo} onChange={(event) => updateSetting('showLogo', event.target.checked)} />
+        显示 Logo
+      </label>
+      <label className="flex items-center gap-2 pt-7 text-sm text-slate-700">
+        <input type="checkbox" checked={printSettings.showAmountGrid} onChange={(event) => updateSetting('showAmountGrid', event.target.checked)} />
+        显示金额分位格
+      </label>
+      <div className="flex flex-wrap items-end justify-end gap-2">
+        <button className="btn-secondary" onClick={exportPdf}><FileDown size={16} />导出 PDF</button>
+        <button className="btn-primary" onClick={() => window.print()}><Printer size={16} />打印</button>
+        <button className="btn-secondary" onClick={onClose}><X size={16} />关闭</button>
+      </div>
+    </div>
+  );
+}
+
 function DeliveryPrintModal({ order, companyProfile, onClose }) {
   const printRef = useRef(null);
   const [printSettings, setPrintSettings] = useState(loadPrintSettings);
   const items = order.delivery_order_items || order.items || [];
   const total = items.reduce((sum, item) => sum + calculateLineAmount(item), 0);
+  const logoWidth = getLogoWidth(printSettings);
   const printCompany = {
     company_name: companyProfile?.company_name || '未设置公司名称',
     company_address: companyProfile?.company_address || '未设置公司地址',
@@ -1956,7 +2067,7 @@ function DeliveryPrintModal({ order, companyProfile, onClose }) {
   };
 
   useEffect(() => {
-    localStorage.setItem('deliveryPrintSettings', JSON.stringify(printSettings));
+    savePrintSettings(printSettings);
   }, [printSettings]);
 
   async function exportPdf() {
@@ -1966,7 +2077,7 @@ function DeliveryPrintModal({ order, companyProfile, onClose }) {
     ]);
     const canvas = await html2canvas(printRef.current, { scale: 2, backgroundColor: '#ffffff' });
     const image = canvas.toDataURL('image/png');
-    const pdf = new jsPDF('l', 'mm', 'a4');
+    const pdf = new jsPDF(getPdfOrientation(printSettings), 'mm', 'a4');
     const width = pdf.internal.pageSize.getWidth();
     const height = (canvas.height * width) / canvas.width;
     pdf.addImage(image, 'PNG', 0, 0, width, height);
@@ -1976,45 +2087,15 @@ function DeliveryPrintModal({ order, companyProfile, onClose }) {
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/50 p-4 print:static print:bg-white print:p-0">
       <div className="mx-auto max-w-6xl rounded-lg bg-white p-4 shadow-xl print:max-w-none print:rounded-none print:p-0 print:shadow-none">
-        <div className="mb-4 grid gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3 print:hidden md:grid-cols-5">
-          <Field label="打印纸张类型">
-            <select className="input" value={printSettings.paperType} onChange={(event) => setPrintSettings({ ...printSettings, paperType: event.target.value })}>
-              <option value="a4">A4纸张</option>
-              <option value="two-part">二联单</option>
-              <option value="triple">财务通用打印三联单</option>
-            </select>
-          </Field>
-          <Field label="Logo 大小">
-            <input className="input" type="number" min="80" max="220" value={printSettings.logoSize} onChange={(event) => setPrintSettings({ ...printSettings, logoSize: Number(event.target.value) })} />
-          </Field>
-          <label className="flex items-center gap-2 pt-7 text-sm text-slate-700">
-            <input type="checkbox" checked={printSettings.showLogo} onChange={(event) => setPrintSettings({ ...printSettings, showLogo: event.target.checked })} />
-            显示 Logo
-          </label>
-          <label className="flex items-center gap-2 pt-7 text-sm text-slate-700">
-            <input type="checkbox" checked={printSettings.showAmountGrid} onChange={(event) => setPrintSettings({ ...printSettings, showAmountGrid: event.target.checked })} />
-            显示金额分位格
-          </label>
-          <div className="flex flex-wrap items-end justify-end gap-2">
-            <button className="btn-secondary" onClick={exportPdf}><FileDown size={16} />导出 PDF</button>
-            <button className="btn-primary" onClick={() => window.print()}><Printer size={16} />打印</button>
-            <button className="btn-secondary" onClick={onClose}><X size={16} />关闭</button>
-          </div>
-        </div>
-        <div className="mb-4 hidden flex-wrap justify-end gap-2 print:hidden">
-          <button className="btn-secondary" onClick={exportPdf}><FileDown size={16} />导出 PDF</button>
-          <button className="btn-primary" onClick={() => window.print()}><Printer size={16} />打印</button>
-          <button className="btn-secondary" onClick={onClose}><X size={16} />关闭</button>
-        </div>
-
-        <article ref={printRef} className={`delivery-print paper-${printSettings.paperType}`}>
+        <PrintSettingsPanel printSettings={printSettings} setPrintSettings={setPrintSettings} exportPdf={exportPdf} onClose={onClose} />
+        <article ref={printRef} className={getPrintClass(printSettings)}>
           <header className="delivery-header">
             <div className="logo-box">
               {printSettings.showLogo && (
                 printCompany.logo_url ? (
-                  <img className="delivery-logo" src={printCompany.logo_url} alt="公司 Logo" style={{ width: `${printSettings.logoSize}px` }} />
+                  <img className="delivery-logo" src={printCompany.logo_url} alt="公司 Logo" style={{ width: `${logoWidth}px` }} />
                 ) : (
-                  <div className="delivery-logo-placeholder" style={{ width: `${printSettings.logoSize}px` }}>LOGO</div>
+                  <div className="delivery-logo-placeholder" style={{ width: `${logoWidth}px` }}>LOGO</div>
                 )
               )}
             </div>
@@ -2108,6 +2189,7 @@ function DeliveryPrintModal({ order, companyProfile, onClose }) {
 function StockDocumentPrintModal({ title, type, logs, companyProfile, onClose }) {
   const printRef = useRef(null);
   const [printSettings, setPrintSettings] = useState(loadPrintSettings);
+  const logoWidth = getLogoWidth(printSettings);
   const rows = logs.filter((log) => log.type === type);
   const items = rows.map((log) => {
     const parsed = parseLogRemark(log.remark);
@@ -2134,7 +2216,7 @@ function StockDocumentPrintModal({ title, type, logs, companyProfile, onClose })
   };
 
   useEffect(() => {
-    localStorage.setItem('deliveryPrintSettings', JSON.stringify(printSettings));
+    savePrintSettings(printSettings);
   }, [printSettings]);
 
   async function exportPdf() {
@@ -2144,7 +2226,7 @@ function StockDocumentPrintModal({ title, type, logs, companyProfile, onClose })
     ]);
     const canvas = await html2canvas(printRef.current, { scale: 2, backgroundColor: '#ffffff' });
     const image = canvas.toDataURL('image/png');
-    const pdf = new jsPDF('l', 'mm', 'a4');
+    const pdf = new jsPDF(getPdfOrientation(printSettings), 'mm', 'a4');
     const width = pdf.internal.pageSize.getWidth();
     const height = (canvas.height * width) / canvas.width;
     pdf.addImage(image, 'PNG', 0, 0, width, height);
@@ -2154,36 +2236,16 @@ function StockDocumentPrintModal({ title, type, logs, companyProfile, onClose })
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/50 p-4 print:static print:bg-white print:p-0">
       <div className="mx-auto max-w-6xl rounded-lg bg-white p-4 shadow-xl print:max-w-none print:rounded-none print:p-0 print:shadow-none">
-        <div className="mb-4 grid gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3 print:hidden md:grid-cols-4">
-          <Field label="打印纸张类型">
-            <select className="input" value={printSettings.paperType} onChange={(event) => setPrintSettings({ ...printSettings, paperType: event.target.value })}>
-              <option value="a4">A4纸张</option>
-              <option value="two-part">二联单</option>
-              <option value="triple">财务通用打印三联单</option>
-            </select>
-          </Field>
-          <Field label="Logo 大小">
-            <input className="input" type="number" min="80" max="220" value={printSettings.logoSize} onChange={(event) => setPrintSettings({ ...printSettings, logoSize: Number(event.target.value) })} />
-          </Field>
-          <label className="flex items-center gap-2 pt-7 text-sm text-slate-700">
-            <input type="checkbox" checked={printSettings.showLogo} onChange={(event) => setPrintSettings({ ...printSettings, showLogo: event.target.checked })} />
-            显示 Logo
-          </label>
-          <div className="flex flex-wrap items-end justify-end gap-2">
-            <button className="btn-secondary" onClick={exportPdf}><FileDown size={16} />导出 PDF</button>
-            <button className="btn-primary" onClick={() => window.print()}><Printer size={16} />打印</button>
-            <button className="btn-secondary" onClick={onClose}><X size={16} />关闭</button>
-          </div>
-        </div>
+        <PrintSettingsPanel printSettings={printSettings} setPrintSettings={setPrintSettings} exportPdf={exportPdf} onClose={onClose} />
 
-        <article ref={printRef} className={`delivery-print paper-${printSettings.paperType}`}>
+        <article ref={printRef} className={getPrintClass(printSettings)}>
           <header className="delivery-header">
             <div className="logo-box">
               {printSettings.showLogo && (
                 printCompany.logo_url ? (
-                  <img className="delivery-logo" src={printCompany.logo_url} alt="公司 Logo" style={{ width: `${printSettings.logoSize}px` }} />
+                  <img className="delivery-logo" src={printCompany.logo_url} alt="公司 Logo" style={{ width: `${logoWidth}px` }} />
                 ) : (
-                  <div className="delivery-logo-placeholder" style={{ width: `${printSettings.logoSize}px` }}>LOGO</div>
+                  <div className="delivery-logo-placeholder" style={{ width: `${logoWidth}px` }}>LOGO</div>
                 )
               )}
             </div>
@@ -2209,7 +2271,9 @@ function StockDocumentPrintModal({ title, type, logs, companyProfile, onClose })
               <col className="delivery-col-unit" />
               <col className="delivery-col-qty" />
               <col className="delivery-col-price" />
-              {Array.from({ length: 8 }).map((_, index) => <col key={index} className="delivery-col-money" />)}
+              {printSettings.showAmountGrid
+                ? Array.from({ length: 8 }).map((_, index) => <col key={index} className="delivery-col-money" />)
+                : <col className="delivery-col-amount" />}
               <col className="delivery-col-remark" />
             </colgroup>
             <thead>
@@ -2219,14 +2283,16 @@ function StockDocumentPrintModal({ title, type, logs, companyProfile, onClose })
                 <th rowSpan="2">单位</th>
                 <th rowSpan="2">数量</th>
                 <th rowSpan="2">单价</th>
-                <th colSpan="8">金额</th>
+                <th colSpan={printSettings.showAmountGrid ? 8 : 1} rowSpan={printSettings.showAmountGrid ? 1 : 2}>金额</th>
                 <th rowSpan="2">备注</th>
               </tr>
-              <tr>
-                {['十', '万', '千', '百', '十', '元', '角', '分'].map((label, index) => (
-                  <th key={`${label}-${index}`} className="money-cell">{label}</th>
-                ))}
-              </tr>
+              {printSettings.showAmountGrid && (
+                <tr>
+                  {['十', '万', '千', '百', '十', '元', '角', '分'].map((label, index) => (
+                    <th key={`${label}-${index}`} className="money-cell">{label}</th>
+                  ))}
+                </tr>
+              )}
             </thead>
             <tbody>
               {Array.from({ length: Math.max(8, items.length) }).map((_, index) => {
@@ -2239,14 +2305,16 @@ function StockDocumentPrintModal({ title, type, logs, companyProfile, onClose })
                     <td>{item?.unit || ''}</td>
                     <td>{item?.quantity || ''}</td>
                     <td>{item ? formatMoney(item.price) : ''}</td>
-                    {amountCells.map((digit, digitIndex) => <td key={digitIndex} className="money-cell">{item ? digit : ''}</td>)}
+                    {printSettings.showAmountGrid
+                      ? amountCells.map((digit, digitIndex) => <td key={digitIndex} className="money-cell">{item ? digit : ''}</td>)
+                      : <td>{item ? formatMoney(item.amount) : ''}</td>}
                     <td>{item?.remark || ''}</td>
                   </tr>
                 );
               })}
               <tr>
-                <td colSpan="10" className="text-left">金额合计(大写)：{amountToChinese(total)}</td>
-                <td colSpan="4" className="text-left">小写金额 ￥{formatMoney(total)}</td>
+                <td colSpan={printSettings.showAmountGrid ? 10 : 4} className="text-left">金额合计(大写)：{amountToChinese(total)}</td>
+                <td colSpan={printSettings.showAmountGrid ? 4 : 3} className="text-left">小写金额 ￥{formatMoney(total)}</td>
               </tr>
             </tbody>
           </table>
