@@ -22,7 +22,7 @@ create table if not exists public.stock_logs (
   id bigint generated always as identity primary key,
   product_id bigint not null references public.products(id) on delete cascade,
   type text not null,
-  quantity integer not null check (quantity > 0),
+  quantity integer not null check (quantity <> 0),
   operator text not null,
   remark text,
   created_at timestamptz not null default now()
@@ -37,9 +37,20 @@ create table if not exists public.stock_log_delete_audit (
   operator text,
   remark text,
   stock_log_created_at timestamptz,
+  restored_delta integer,
   deleted_by text not null,
   deleted_at timestamptz not null default now()
 );
+
+alter table public.stock_logs
+drop constraint if exists stock_logs_quantity_check;
+
+alter table public.stock_logs
+add constraint stock_logs_quantity_check
+check (quantity <> 0);
+
+alter table public.stock_log_delete_audit
+add column if not exists restored_delta integer;
 
 alter table public.stock_logs
 drop constraint if exists stock_logs_type_check;
@@ -245,7 +256,13 @@ begin
   where id = p_product_id;
 
   insert into public.stock_logs (product_id, type, quantity, operator, remark)
-  values (p_product_id, p_type, abs(p_quantity), p_operator, p_remark);
+  values (
+    p_product_id,
+    p_type,
+    case when p_type = 'adjustment' then p_quantity else abs(p_quantity) end,
+    p_operator,
+    p_remark
+  );
 end;
 $$;
 
@@ -366,6 +383,93 @@ begin
     target_log.operator,
     target_log.remark,
     target_log.created_at,
+    p_username
+  );
+
+  delete from public.stock_logs
+  where id = p_log_id;
+end;
+$$;
+
+grant execute on function public.delete_stock_log(bigint, text) to anon, authenticated;
+
+create or replace function public.delete_stock_log(
+  p_log_id bigint,
+  p_username text
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  current_user_role text;
+  target_log public.stock_logs%rowtype;
+  restore_delta integer;
+  current_qty integer;
+begin
+  select role into current_user_role
+  from public.app_users
+  where username = p_username
+    and status = 'active';
+
+  if current_user_role is distinct from 'admin' then
+    raise exception '权限不足，只有管理员才能删除库存流水';
+  end if;
+
+  select * into target_log
+  from public.stock_logs
+  where id = p_log_id
+  for update;
+
+  if target_log.id is null then
+    raise exception '库存流水不存在或已被删除';
+  end if;
+
+  restore_delta := case
+    when target_log.type in ('purchase_in', 'sale_return') then -abs(target_log.quantity)
+    when target_log.type in ('purchase_return', 'sale_out') then abs(target_log.quantity)
+    when target_log.type = 'adjustment' then -target_log.quantity
+    else 0
+  end;
+
+  select quantity into current_qty
+  from public.products
+  where id = target_log.product_id
+  for update;
+
+  if current_qty is null then
+    raise exception '商品不存在，无法恢复库存';
+  end if;
+
+  if current_qty + restore_delta < 0 then
+    raise exception '删除该库存流水会导致商品库存小于 0，已取消删除';
+  end if;
+
+  update public.products
+  set quantity = quantity + restore_delta
+  where id = target_log.product_id;
+
+  insert into public.stock_log_delete_audit (
+    stock_log_id,
+    product_id,
+    type,
+    quantity,
+    operator,
+    remark,
+    stock_log_created_at,
+    restored_delta,
+    deleted_by
+  )
+  values (
+    target_log.id,
+    target_log.product_id,
+    target_log.type,
+    target_log.quantity,
+    target_log.operator,
+    target_log.remark,
+    target_log.created_at,
+    restore_delta,
     p_username
   );
 
