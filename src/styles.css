@@ -1,0 +1,221 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  margin: 0;
+  background: #f8fafc;
+  color: #0f172a;
+}
+
+input,
+select,
+textarea,
+button {
+  font: inherit;
+}
+
+.table-scroll {
+  scrollbar-width: thin;
+}
+
+@media print {
+  @page {
+    size: A4 landscape;
+    margin: 8mm;
+  }
+
+  body {
+    background: #fff;
+  }
+}
+
+@layer components {
+  .input {
+    @apply w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-slate-900 focus:ring-2 focus:ring-slate-900/10;
+  }
+
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50;
+  }
+
+  .btn-small {
+    @apply inline-flex items-center justify-center rounded-lg px-3 py-1.5 text-xs font-medium transition hover:opacity-80;
+  }
+
+  .icon-button {
+    @apply inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-50;
+  }
+
+  .nav-button {
+    @apply flex min-w-max items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-100 lg:w-full;
+  }
+
+  .nav-button-active {
+    @apply bg-slate-900 text-white hover:bg-slate-900;
+  }
+
+  .data-table {
+    @apply w-full text-left text-sm;
+  }
+
+  .data-table thead {
+    @apply bg-slate-50 text-xs uppercase tracking-wide text-slate-500;
+  }
+
+  .data-table th {
+    @apply px-4 py-3 font-semibold;
+  }
+
+  .data-table td {
+    @apply border-t border-slate-100 px-4 py-3 align-middle;
+  }
+}
+
+.delivery-print {
+  width: 1100px;
+  max-width: 100%;
+  margin: 0 auto;
+  background: #fff;
+  border: 1px solid #111827;
+  padding: 20px 28px 54px;
+  color: #000;
+  font-family: "SimSun", "Songti SC", serif;
+}
+
+.delivery-header {
+  display: grid;
+  grid-template-columns: 170px 1fr 230px;
+  align-items: center;
+  gap: 12px;
+}
+
+.logo-box {
+  width: 150px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.delivery-logo {
+  width: 150px;
+  height: auto;
+  object-fit: contain;
+}
+
+.delivery-logo-placeholder {
+  width: 150px;
+  height: 54px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #111;
+  color: #475569;
+  font-family: Arial, sans-serif;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 2px;
+}
+
+.delivery-title {
+  text-align: center;
+}
+
+.delivery-title h1 {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+.delivery-title p {
+  margin: 4px 0 8px;
+  font-size: 14px;
+}
+
+.delivery-title h2 {
+  margin: 0;
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: 8px;
+}
+
+.delivery-meta {
+  margin-top: 86px;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.delivery-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 14px;
+}
+
+.delivery-table th,
+.delivery-table td {
+  height: 30px;
+  border: 1px solid #111;
+  padding: 3px 5px;
+  text-align: center;
+  font-weight: 400;
+}
+
+.delivery-table .money-cell {
+  width: 26px;
+  min-width: 26px;
+  padding-left: 0;
+  padding-right: 0;
+  text-align: center;
+}
+
+.delivery-col-index {
+  width: 52px;
+}
+
+.delivery-col-sku {
+  width: 120px;
+}
+
+.delivery-col-name {
+  width: 220px;
+}
+
+.delivery-col-unit {
+  width: 56px;
+}
+
+.delivery-col-qty {
+  width: 72px;
+}
+
+.delivery-col-price {
+  width: 82px;
+}
+
+.delivery-col-money {
+  width: 26px;
+}
+
+.delivery-col-remark {
+  width: 130px;
+}
+
+@media print {
+  .delivery-print {
+    width: 100%;
+    max-width: none;
+    border: 0;
+    padding: 0;
+  }
+
+  .delivery-table th,
+  .delivery-table td {
+    border-color: #000;
+  }
+}
