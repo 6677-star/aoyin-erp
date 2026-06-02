@@ -35,6 +35,11 @@ button {
     margin: 8mm;
   }
 
+  @page two-part-page {
+    size: A4 portrait;
+    margin: 6mm;
+  }
+
   @page triple-page {
     size: 241mm 279mm;
     margin: 6mm;
@@ -112,13 +117,22 @@ button {
   page-break-inside: avoid;
 }
 
-.delivery-copy-separator {
-  margin: 8px 0;
-  border-top: 1px dashed #555;
-  break-after: auto;
-  break-before: auto;
-  page-break-after: auto;
-  page-break-before: auto;
+.document-qr {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  font-size: 10px;
+  color: #111;
+}
+
+.document-qr img {
+  width: 64px;
+  height: 64px;
+  object-fit: contain;
 }
 
 .delivery-print.print-portrait {
@@ -323,6 +337,22 @@ button {
   width: 130px;
 }
 
+.print-hide-amounts .delivery-col-name {
+  width: 300px;
+}
+
+.print-hide-amounts .delivery-col-remark {
+  width: 220px;
+}
+
+.print-hide-amounts.print-portrait .delivery-col-name {
+  width: 210px;
+}
+
+.print-hide-amounts.print-portrait .delivery-col-remark {
+  width: 150px;
+}
+
 .paper-two-part {
   display: flex;
   flex-direction: column;
@@ -337,17 +367,17 @@ button {
 
 .paper-two-part .delivery-copy {
   box-sizing: border-box;
-  height: 134mm;
+  height: calc((297mm - 12mm) / 2);
   overflow: hidden;
-  padding-bottom: 3mm;
+  margin: 0;
+  padding-bottom: 0;
 }
 
 .paper-two-part.print-landscape .delivery-copy {
-  height: 96mm;
+  height: calc((297mm - 12mm) / 2);
 }
 
-.paper-two-part .delivery-copy-separator {
-  margin: 2mm 0;
+.paper-two-part .delivery-copy + .delivery-copy {
   border-top: 1px dashed #777;
 }
 
@@ -412,8 +442,7 @@ button {
   padding-bottom: 2mm;
 }
 
-.paper-triple .delivery-copy-separator {
-  margin: 1.5mm 0;
+.paper-triple .delivery-copy + .delivery-copy {
   border-top: 1px dashed #000;
 }
 
@@ -471,6 +500,11 @@ button {
     margin: 8mm;
   }
 
+  @page two-part-page {
+    size: A4 portrait;
+    margin: 6mm;
+  }
+
   @page triple-page {
     size: 241mm 279mm;
     margin: 6mm;
@@ -510,7 +544,7 @@ button {
 
   .delivery-print.paper-two-part {
     font-size: 13px;
-    max-height: calc(297mm - 16mm);
+    max-height: calc(297mm - 12mm);
     overflow: hidden;
   }
 
@@ -535,8 +569,36 @@ button {
 
   .delivery-print.paper-two-part.print-portrait,
   .delivery-print.paper-two-part.print-landscape {
-    page: portrait-page;
-    max-height: calc(297mm - 16mm);
+    page: two-part-page;
+    max-height: calc(297mm - 12mm);
+    height: calc(297mm - 12mm);
+    margin: 0 auto !important;
+    padding: 0 !important;
+    overflow: hidden;
+    break-after: auto !important;
+    page-break-after: auto !important;
+  }
+
+  .delivery-print.paper-two-part .delivery-copy {
+    height: calc((297mm - 12mm) / 2);
+    margin: 0 !important;
+    padding: 0 0 1mm !important;
+    overflow: hidden;
+    break-after: auto !important;
+    page-break-after: auto !important;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .delivery-print.paper-two-part .delivery-copy + .delivery-copy {
+    border-top: 1px dashed #777;
+  }
+
+  .delivery-print.paper-two-part .delivery-copy:last-child {
+    margin-bottom: 0 !important;
+    padding-bottom: 0 !important;
+    break-after: auto !important;
+    page-break-after: auto !important;
   }
 
   .delivery-print.paper-triple.print-portrait,
@@ -551,10 +613,6 @@ button {
     margin-bottom: 0 !important;
     break-after: auto !important;
     page-break-after: auto !important;
-  }
-
-  .delivery-copy-separator:last-child {
-    display: none !important;
   }
 
   .delivery-table th,

@@ -188,6 +188,8 @@ const defaultPrintSettings = {
   showLogo: true,
   logoSize: 'medium',
   showAmountGrid: true,
+  hideAmounts: false,
+  showQrCode: false,
 };
 
 function normalizePrintSettings(settings = {}) {
@@ -202,6 +204,8 @@ function normalizePrintSettings(settings = {}) {
   if (!Object.hasOwn(printLogoSizes, next.logoSize)) next.logoSize = defaultPrintSettings.logoSize;
   next.showLogo = Boolean(next.showLogo);
   next.showAmountGrid = next.showAmountGrid !== false;
+  next.hideAmounts = Boolean(next.hideAmounts);
+  next.showQrCode = Boolean(next.showQrCode);
   return next;
 }
 
@@ -226,11 +230,13 @@ function getLogoWidth(settings) {
 
 function getPrintClass(settings) {
   const normalized = normalizePrintSettings(settings);
-  return `delivery-print paper-${normalized.paperType} print-${normalized.orientation}`;
+  return `delivery-print paper-${normalized.paperType} print-${normalized.orientation}${normalized.hideAmounts ? ' print-hide-amounts' : ''}`;
 }
 
 function getPdfOrientation(settings) {
-  return normalizePrintSettings(settings).orientation === 'landscape' ? 'l' : 'p';
+  const normalized = normalizePrintSettings(settings);
+  if (normalized.paperType === 'two-part') return 'p';
+  return normalized.orientation === 'landscape' ? 'l' : 'p';
 }
 
 function getPdfFormat(settings) {
@@ -252,14 +258,47 @@ function syncPrintCopies(printRef, settings) {
   if (!source) return;
   const copyCount = getPrintCopyCount(settings);
   for (let index = 1; index < copyCount; index += 1) {
-    const separator = document.createElement('div');
-    separator.className = 'delivery-copy-separator';
-    root.appendChild(separator);
     const clone = source.cloneNode(true);
     clone.classList.remove('delivery-copy-source');
     clone.classList.add('delivery-copy-clone');
     root.appendChild(clone);
   }
+}
+
+async function generateQrCodeDataUrl(content) {
+  const QRCode = await import('qrcode');
+  return QRCode.toDataURL(String(content || ''), {
+    errorCorrectionLevel: 'M',
+    margin: 1,
+    width: 120,
+  });
+}
+
+function buildDeliveryQrContent(order) {
+  return JSON.stringify({
+    type: 'delivery_order',
+    order_no: order.order_no,
+    date: order.delivery_date,
+  });
+}
+
+function buildStockDocumentQrContent(title, type) {
+  return JSON.stringify({
+    type: 'stock_document',
+    title,
+    stock_type: type,
+    date: todayDate(),
+  });
+}
+
+function buildStockLogQrContent(log) {
+  return JSON.stringify({
+    type: 'stock_log',
+    id: log.id,
+    stock_type: log.type,
+    product_sku: log.products?.sku || '',
+    created_at: log.created_at,
+  });
 }
 
 function logSupabaseDeleteError(error, productId, context) {
@@ -1599,6 +1638,7 @@ function DeliveryOrdersView({ orders, customers, products, canMutate, canDelete,
 function InventoryView({ logs, products, canAdjust, canDelete, onAdjust, onDelete }) {
   const [filters, setFilters] = useState({ productQuery: '', customer: '', supplier: '', type: '', start: '', end: '' });
   const [adjust, setAdjust] = useState({ productId: '', quantity: 0, remark: '' });
+  const [exportWithQrCode, setExportWithQrCode] = useState(false);
 
   const rows = logs.filter((log) => {
     const parsed = parseLogRemark(log.remark);
@@ -1613,7 +1653,6 @@ function InventoryView({ logs, products, canAdjust, canDelete, onAdjust, onDelet
   });
 
   async function exportExcel() {
-    const XLSX = await import('xlsx');
     const data = rows.map((log) => {
       const parsed = parseLogRemark(log.remark);
       const price = parsed.price || 0;
@@ -1632,6 +1671,58 @@ function InventoryView({ logs, products, canAdjust, canDelete, onAdjust, onDelet
         备注: log.remark || '',
       };
     });
+
+    if (exportWithQrCode) {
+      const ExcelJS = await import('exceljs');
+      const workbook = new ExcelJS.Workbook();
+      const worksheet = workbook.addWorksheet('库存流水');
+      const headers = [...Object.keys(data[0] || {
+        日期: '',
+        商品编号: '',
+        商品名称: '',
+        客户: '',
+        供应商: '',
+        类型: '',
+        数量: '',
+        单价: '',
+        金额: '',
+        操作人: '',
+        备注: '',
+      }), '二维码'];
+      worksheet.addRow(headers);
+      worksheet.getRow(1).font = { bold: true };
+
+      for (const [index, row] of data.entries()) {
+        const excelRow = worksheet.addRow(Object.values(row));
+        excelRow.height = 72;
+        const qrDataUrl = await generateQrCodeDataUrl(buildStockLogQrContent(rows[index]));
+        const imageId = workbook.addImage({
+          base64: qrDataUrl,
+          extension: 'png',
+        });
+        worksheet.addImage(imageId, {
+          tl: { col: headers.length - 1, row: index + 1 },
+          ext: { width: 72, height: 72 },
+        });
+      }
+
+      worksheet.columns = headers.map((header) => ({
+        header,
+        key: header,
+        width: header === '二维码' ? 14 : 18,
+      }));
+      const buffer = await workbook.xlsx.writeBuffer();
+      const blob = new window.Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `库存流水_${compactTimestamp()}.xlsx`;
+      link.click();
+      window.URL.revokeObjectURL(url);
+      return;
+    }
+
+    const XLSX = await import('xlsx');
     const worksheet = XLSX.utils.json_to_sheet(data);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, '库存流水');
@@ -1705,7 +1796,11 @@ function InventoryView({ logs, products, canAdjust, canDelete, onAdjust, onDelet
             <input className="input" type="date" value={filters.end} onChange={(event) => setFilters({ ...filters, end: event.target.value })} />
           </Field>
         </div>
-        <div className="mt-4 flex justify-end">
+        <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
+          <label className="flex items-center gap-2 text-sm text-slate-600" title="勾选后导出的文件会附带二维码，可扫码查看单据详情">
+            <input type="checkbox" checked={exportWithQrCode} onChange={(event) => setExportWithQrCode(event.target.checked)} />
+            生成二维码
+          </label>
           <button className="btn-secondary" type="button" onClick={exportExcel}>导出 Excel</button>
         </div>
         <div className="mt-4 divide-y divide-slate-100">
@@ -2037,7 +2132,7 @@ function PrintSettingsPanel({ printSettings, setPrintSettings, exportPdf, onClos
   const updateSetting = (key, value) => setPrintSettings(normalizePrintSettings({ ...printSettings, [key]: value }));
 
   return (
-    <div className="mb-4 grid gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3 print:hidden md:grid-cols-6">
+    <div className="mb-4 grid gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3 print:hidden md:grid-cols-8">
       <Field label="打印纸张类型">
         <select className="input" value={printSettings.paperType} onChange={(event) => updateSetting('paperType', event.target.value)}>
           <option value="a4">A4标准纸</option>
@@ -2066,6 +2161,14 @@ function PrintSettingsPanel({ printSettings, setPrintSettings, exportPdf, onClos
         <input type="checkbox" checked={printSettings.showAmountGrid} onChange={(event) => updateSetting('showAmountGrid', event.target.checked)} />
         显示金额分位格
       </label>
+      <label className="flex items-center gap-2 pt-7 text-sm text-slate-700">
+        <input type="checkbox" checked={printSettings.hideAmounts} onChange={(event) => updateSetting('hideAmounts', event.target.checked)} />
+        隐藏单价和金额
+      </label>
+      <label className="flex items-center gap-2 pt-7 text-sm text-slate-700" title="勾选后导出的文件会附带二维码，可扫码查看单据详情">
+        <input type="checkbox" checked={printSettings.showQrCode} onChange={(event) => updateSetting('showQrCode', event.target.checked)} />
+        生成二维码
+      </label>
       <div className="flex flex-wrap items-end justify-end gap-2">
         <button className="btn-secondary" onClick={exportPdf}><FileDown size={16} />导出 PDF</button>
         <button className="btn-primary" onClick={() => window.print()}><Printer size={16} />打印</button>
@@ -2078,6 +2181,7 @@ function PrintSettingsPanel({ printSettings, setPrintSettings, exportPdf, onClos
 function DeliveryPrintModal({ order, companyProfile, onClose }) {
   const printRef = useRef(null);
   const [printSettings, setPrintSettings] = useState(loadPrintSettings);
+  const [qrDataUrl, setQrDataUrl] = useState('');
   const items = order.delivery_order_items || order.items || [];
   const total = items.reduce((sum, item) => sum + calculateLineAmount(item), 0);
   const logoWidth = getLogoWidth(printSettings);
@@ -2093,6 +2197,22 @@ function DeliveryPrintModal({ order, companyProfile, onClose }) {
     savePrintSettings(printSettings);
     syncPrintCopies(printRef, printSettings);
   }, [printSettings]);
+
+  useEffect(() => {
+    let ignore = false;
+    if (!printSettings.showQrCode) {
+      setQrDataUrl('');
+      return () => {
+        ignore = true;
+      };
+    }
+    generateQrCodeDataUrl(buildDeliveryQrContent(order)).then((url) => {
+      if (!ignore) setQrDataUrl(url);
+    });
+    return () => {
+      ignore = true;
+    };
+  }, [order, printSettings.showQrCode]);
 
   async function exportPdf() {
     syncPrintCopies(printRef, printSettings);
@@ -2157,10 +2277,12 @@ function DeliveryPrintModal({ order, companyProfile, onClose }) {
               <col className="delivery-col-name" />
               <col className="delivery-col-unit" />
               <col className="delivery-col-qty" />
-              <col className="delivery-col-price" />
-              {printSettings.showAmountGrid
-                ? Array.from({ length: 8 }).map((_, index) => <col key={index} className="delivery-col-money" />)
-                : <col className="delivery-col-amount" />}
+              {!printSettings.hideAmounts && <col className="delivery-col-price" />}
+              {!printSettings.hideAmounts && (
+                printSettings.showAmountGrid
+                  ? Array.from({ length: 8 }).map((_, index) => <col key={index} className="delivery-col-money" />)
+                  : <col className="delivery-col-amount" />
+              )}
               <col className="delivery-col-remark" />
             </colgroup>
             <thead>
@@ -2170,11 +2292,11 @@ function DeliveryPrintModal({ order, companyProfile, onClose }) {
                 <th rowSpan="2">产品名称</th>
                 <th rowSpan="2">单位</th>
                 <th rowSpan="2">数量</th>
-                <th rowSpan="2">单价</th>
-                <th colSpan={printSettings.showAmountGrid ? 8 : 1} rowSpan={printSettings.showAmountGrid ? 1 : 2}>金额</th>
+                {!printSettings.hideAmounts && <th rowSpan="2">单价</th>}
+                {!printSettings.hideAmounts && <th colSpan={printSettings.showAmountGrid ? 8 : 1} rowSpan={printSettings.showAmountGrid ? 1 : 2}>金额</th>}
                 <th rowSpan="2">备注</th>
               </tr>
-              {printSettings.showAmountGrid && (
+              {!printSettings.hideAmounts && printSettings.showAmountGrid && (
                 <tr>
                   {['十', '万', '千', '百', '十', '元', '角', '分'].map((label, index) => (
                     <th key={`${label}-${index}`} className="money-cell">{label}</th>
@@ -2193,17 +2315,21 @@ function DeliveryPrintModal({ order, companyProfile, onClose }) {
                     <td>{item?.product_name || ''}</td>
                     <td>{item?.unit || ''}</td>
                     <td>{item?.quantity || ''}</td>
-                    <td>{item ? formatMoney(item.price) : ''}</td>
-                    {printSettings.showAmountGrid
-                      ? amountCells.map((digit, digitIndex) => <td key={digitIndex} className="money-cell">{item ? digit : ''}</td>)
-                      : <td>{item ? formatMoney(calculateLineAmount(item)) : ''}</td>}
+                    {!printSettings.hideAmounts && <td>{item ? formatMoney(item.price) : ''}</td>}
+                    {!printSettings.hideAmounts && (
+                      printSettings.showAmountGrid
+                        ? amountCells.map((digit, digitIndex) => <td key={digitIndex} className="money-cell">{item ? digit : ''}</td>)
+                        : <td>{item ? formatMoney(calculateLineAmount(item)) : ''}</td>
+                    )}
                     <td>{item?.remark || ''}</td>
                   </tr>
                 );
               })}
-              <tr>
-                <td colSpan={printSettings.showAmountGrid ? 15 : 8} className="text-left">金额合计：￥{formatMoney(total)}</td>
-              </tr>
+              {!printSettings.hideAmounts && (
+                <tr>
+                  <td colSpan={printSettings.showAmountGrid ? 15 : 8} className="text-left">金额合计：￥{formatMoney(total)}</td>
+                </tr>
+              )}
             </tbody>
           </table>
 
@@ -2212,6 +2338,12 @@ function DeliveryPrintModal({ order, companyProfile, onClose }) {
             <div>送货单位及经手人（盖章）：</div>
             <div>收货单位及经手人（盖章）：</div>
           </footer>
+          {printSettings.showQrCode && qrDataUrl && (
+            <div className="document-qr">
+              <img src={qrDataUrl} alt="单据二维码" />
+              <span>扫码查看单据详情</span>
+            </div>
+          )}
           </section>
         </article>
       </div>
@@ -2222,6 +2354,7 @@ function DeliveryPrintModal({ order, companyProfile, onClose }) {
 function StockDocumentPrintModal({ title, type, logs, companyProfile, onClose }) {
   const printRef = useRef(null);
   const [printSettings, setPrintSettings] = useState(loadPrintSettings);
+  const [qrDataUrl, setQrDataUrl] = useState('');
   const logoWidth = getLogoWidth(printSettings);
   const rows = logs.filter((log) => log.type === type);
   const items = rows.map((log) => {
@@ -2252,6 +2385,22 @@ function StockDocumentPrintModal({ title, type, logs, companyProfile, onClose })
     savePrintSettings(printSettings);
     syncPrintCopies(printRef, printSettings);
   }, [printSettings]);
+
+  useEffect(() => {
+    let ignore = false;
+    if (!printSettings.showQrCode) {
+      setQrDataUrl('');
+      return () => {
+        ignore = true;
+      };
+    }
+    generateQrCodeDataUrl(buildStockDocumentQrContent(title, type)).then((url) => {
+      if (!ignore) setQrDataUrl(url);
+    });
+    return () => {
+      ignore = true;
+    };
+  }, [printSettings.showQrCode, title, type]);
 
   async function exportPdf() {
     syncPrintCopies(printRef, printSettings);
@@ -2313,10 +2462,12 @@ function StockDocumentPrintModal({ title, type, logs, companyProfile, onClose })
               <col className="delivery-col-name" />
               <col className="delivery-col-unit" />
               <col className="delivery-col-qty" />
-              <col className="delivery-col-price" />
-              {printSettings.showAmountGrid
-                ? Array.from({ length: 8 }).map((_, index) => <col key={index} className="delivery-col-money" />)
-                : <col className="delivery-col-amount" />}
+              {!printSettings.hideAmounts && <col className="delivery-col-price" />}
+              {!printSettings.hideAmounts && (
+                printSettings.showAmountGrid
+                  ? Array.from({ length: 8 }).map((_, index) => <col key={index} className="delivery-col-money" />)
+                  : <col className="delivery-col-amount" />
+              )}
               <col className="delivery-col-remark" />
             </colgroup>
             <thead>
@@ -2325,11 +2476,11 @@ function StockDocumentPrintModal({ title, type, logs, companyProfile, onClose })
                 <th rowSpan="2">商品名称</th>
                 <th rowSpan="2">单位</th>
                 <th rowSpan="2">数量</th>
-                <th rowSpan="2">单价</th>
-                <th colSpan={printSettings.showAmountGrid ? 8 : 1} rowSpan={printSettings.showAmountGrid ? 1 : 2}>金额</th>
+                {!printSettings.hideAmounts && <th rowSpan="2">单价</th>}
+                {!printSettings.hideAmounts && <th colSpan={printSettings.showAmountGrid ? 8 : 1} rowSpan={printSettings.showAmountGrid ? 1 : 2}>金额</th>}
                 <th rowSpan="2">备注</th>
               </tr>
-              {printSettings.showAmountGrid && (
+              {!printSettings.hideAmounts && printSettings.showAmountGrid && (
                 <tr>
                   {['十', '万', '千', '百', '十', '元', '角', '分'].map((label, index) => (
                     <th key={`${label}-${index}`} className="money-cell">{label}</th>
@@ -2347,19 +2498,29 @@ function StockDocumentPrintModal({ title, type, logs, companyProfile, onClose })
                     <td>{item?.product_name || ''}</td>
                     <td>{item?.unit || ''}</td>
                     <td>{item?.quantity || ''}</td>
-                    <td>{item ? formatMoney(item.price) : ''}</td>
-                    {printSettings.showAmountGrid
-                      ? amountCells.map((digit, digitIndex) => <td key={digitIndex} className="money-cell">{item ? digit : ''}</td>)
-                      : <td>{item ? formatMoney(item.amount) : ''}</td>}
+                    {!printSettings.hideAmounts && <td>{item ? formatMoney(item.price) : ''}</td>}
+                    {!printSettings.hideAmounts && (
+                      printSettings.showAmountGrid
+                        ? amountCells.map((digit, digitIndex) => <td key={digitIndex} className="money-cell">{item ? digit : ''}</td>)
+                        : <td>{item ? formatMoney(item.amount) : ''}</td>
+                    )}
                     <td>{item?.remark || ''}</td>
                   </tr>
                 );
               })}
-              <tr>
-                <td colSpan={printSettings.showAmountGrid ? 14 : 7} className="text-left">金额合计：￥{formatMoney(total)}</td>
-              </tr>
+              {!printSettings.hideAmounts && (
+                <tr>
+                  <td colSpan={printSettings.showAmountGrid ? 14 : 7} className="text-left">金额合计：￥{formatMoney(total)}</td>
+                </tr>
+              )}
             </tbody>
           </table>
+          {printSettings.showQrCode && qrDataUrl && (
+            <div className="document-qr">
+              <img src={qrDataUrl} alt="单据二维码" />
+              <span>扫码查看单据详情</span>
+            </div>
+          )}
           </section>
         </article>
       </div>

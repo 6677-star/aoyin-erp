@@ -18,6 +18,19 @@ export default [
     },
   },
   {
+    files: ['electron/**/*.cjs'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'commonjs',
+      globals: {
+        __dirname: 'readonly',
+        process: 'readonly',
+        require: 'readonly',
+        module: 'readonly',
+      },
+    },
+  },
+  {
     files: ['src/**/*.{js,jsx}'],
     languageOptions: {
       ecmaVersion: 2022,
