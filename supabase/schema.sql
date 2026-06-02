@@ -63,6 +63,19 @@ create table if not exists public.stock_logs (
   created_at timestamptz not null default now()
 );
 
+alter table public.stock_logs add column if not exists product_sku text;
+alter table public.stock_logs add column if not exists product_name text;
+alter table public.stock_logs add column if not exists category_id bigint;
+alter table public.stock_logs add column if not exists category_name text;
+alter table public.stock_logs add column if not exists customer_name text;
+alter table public.stock_logs add column if not exists supplier_name text;
+alter table public.stock_logs add column if not exists before_qty integer;
+alter table public.stock_logs add column if not exists after_qty integer;
+alter table public.stock_logs add column if not exists unit_price numeric(12, 2) default 0;
+alter table public.stock_logs add column if not exists amount numeric(12, 2) default 0;
+alter table public.stock_logs add column if not exists order_id uuid;
+alter table public.stock_logs add column if not exists order_no text;
+
 create table if not exists public.stock_log_delete_audit (
   id bigint generated always as identity primary key,
   stock_log_id bigint not null,
@@ -92,7 +105,7 @@ drop constraint if exists stock_logs_type_check;
 
 alter table public.stock_logs
 add constraint stock_logs_type_check
-check (type in ('purchase_in', 'purchase_return', 'sale_out', 'sale_return', 'adjustment'));
+check (type in ('purchase_in', 'purchase_return', 'sale_out', 'sale_return', 'adjustment', 'system_delete'));
 
 create table if not exists public.customers (
   id uuid primary key default gen_random_uuid(),
@@ -119,11 +132,30 @@ create table if not exists public.delivery_orders (
   order_no text not null unique,
   customer_id uuid references public.customers(id) on delete set null,
   customer_name text not null,
+  order_type text not null default 'sale_out',
+  status text not null default 'saved',
   delivery_date date not null default current_date,
   operator text not null,
   remark text,
   created_at timestamptz not null default now()
 );
+
+alter table public.delivery_orders add column if not exists order_type text not null default 'sale_out';
+alter table public.delivery_orders add column if not exists status text not null default 'saved';
+
+alter table public.delivery_orders
+drop constraint if exists delivery_orders_order_type_check;
+
+alter table public.delivery_orders
+add constraint delivery_orders_order_type_check
+check (order_type in ('sale_out', 'sale_return'));
+
+alter table public.delivery_orders
+drop constraint if exists delivery_orders_status_check;
+
+alter table public.delivery_orders
+add constraint delivery_orders_status_check
+check (status in ('saved', 'deleted'));
 
 create table if not exists public.delivery_order_items (
   id uuid primary key default gen_random_uuid(),
@@ -150,10 +182,13 @@ create index if not exists idx_suppliers_name on public.suppliers (name);
 create index if not exists idx_stock_logs_created_at on public.stock_logs (created_at desc);
 create index if not exists idx_stock_logs_product_id on public.stock_logs (product_id);
 create index if not exists idx_stock_logs_type on public.stock_logs (type);
+create index if not exists idx_stock_logs_category_id on public.stock_logs (category_id);
+create index if not exists idx_stock_logs_order_id on public.stock_logs (order_id);
 create index if not exists idx_stock_log_delete_audit_deleted_at on public.stock_log_delete_audit (deleted_at desc);
 create index if not exists idx_stock_log_delete_audit_stock_log_id on public.stock_log_delete_audit (stock_log_id);
 create index if not exists idx_delivery_orders_order_no on public.delivery_orders (order_no);
 create index if not exists idx_delivery_orders_customer_id on public.delivery_orders (customer_id);
+create index if not exists idx_delivery_orders_order_type on public.delivery_orders (order_type);
 create index if not exists idx_delivery_order_items_order_id on public.delivery_order_items (delivery_order_id);
 create index if not exists idx_delivery_order_items_product_id on public.delivery_order_items (product_id);
 
@@ -264,6 +299,8 @@ as $$
 declare
   current_qty integer;
   signed_delta integer;
+  product_row public.products%rowtype;
+  next_qty integer;
 begin
   if p_quantity = 0 then
     raise exception 'Quantity cannot be 0';
@@ -273,14 +310,16 @@ begin
     raise exception 'Invalid stock type';
   end if;
 
-  select quantity into current_qty
+  select * into product_row
   from public.products
   where id = p_product_id
   for update;
 
-  if current_qty is null then
+  if product_row.id is null then
     raise exception 'Product not found';
   end if;
+
+  current_qty := product_row.quantity;
 
   signed_delta := case
     when p_type in ('purchase_in', 'sale_return') then abs(p_quantity)
@@ -293,15 +332,35 @@ begin
     raise exception 'Insufficient stock';
   end if;
 
+  next_qty := current_qty + signed_delta;
+
   update public.products
   set quantity = quantity + signed_delta
   where id = p_product_id;
 
-  insert into public.stock_logs (product_id, type, quantity, operator, remark)
+  insert into public.stock_logs (
+    product_id,
+    product_sku,
+    product_name,
+    category_id,
+    category_name,
+    type,
+    quantity,
+    before_qty,
+    after_qty,
+    operator,
+    remark
+  )
   values (
     p_product_id,
+    product_row.sku,
+    product_row.name,
+    product_row.category_id,
+    product_row.category_name,
     p_type,
     case when p_type = 'adjustment' then p_quantity else abs(p_quantity) end,
+    current_qty,
+    next_qty,
     p_operator,
     p_remark
   );

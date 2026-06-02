@@ -71,6 +71,7 @@ const stockTypeLabels = {
   sale_out: '销售出库',
   sale_return: '销售退货',
   adjustment: '库存调整',
+  system_delete: '系统删除',
 };
 
 const stockTypeTones = {
@@ -79,6 +80,12 @@ const stockTypeTones = {
   sale_out: 'bg-sky-50 text-sky-700',
   sale_return: 'bg-violet-50 text-violet-700',
   adjustment: 'bg-slate-100 text-slate-700',
+  system_delete: 'bg-rose-50 text-rose-700',
+};
+
+const deliveryOrderTypeLabels = {
+  sale_out: '销售出库',
+  sale_return: '销售退货',
 };
 
 const roleLabels = {
@@ -89,10 +96,10 @@ const roleLabels = {
 };
 
 const menuPermissions = {
-  admin: ['dashboard', 'categories', 'products', 'customers', 'suppliers', 'company', 'users', 'purchase', 'sales', 'delivery', 'inventory'],
+  admin: ['dashboard', 'categories', 'products', 'customers', 'suppliers', 'company', 'users', 'purchase', 'sales', 'inventory'],
   warehouse: ['dashboard', 'categories', 'products', 'purchase', 'sales', 'inventory'],
-  sales: ['dashboard', 'categories', 'products', 'customers', 'sales', 'delivery'],
-  viewer: ['dashboard', 'categories', 'products', 'customers', 'suppliers', 'delivery', 'inventory'],
+  sales: ['dashboard', 'categories', 'products', 'customers', 'sales'],
+  viewer: ['dashboard', 'categories', 'products', 'customers', 'suppliers', 'sales', 'inventory'],
 };
 
 const actionPermissions = {
@@ -107,7 +114,7 @@ const actionPermissions = {
   deleteSuppliers: ['admin'],
   purchaseStock: ['admin', 'warehouse'],
   salesStock: ['admin', 'warehouse'],
-  mutateDelivery: ['admin', 'sales'],
+  mutateDelivery: ['admin', 'warehouse', 'sales'],
   deleteDelivery: ['admin'],
   adjustStock: ['admin', 'warehouse'],
   deleteStockLogs: ['admin'],
@@ -832,6 +839,64 @@ function ErpApp({ currentUser, onLogout }) {
     }, '库存流水已删除，操作已记录。');
   }
 
+  async function applyDeliveryStock(order, items, mode = 'apply') {
+    const orderType = order.order_type || 'sale_out';
+    for (const item of items) {
+      const productId = item.product_id;
+      const quantity = Math.abs(Number(item.quantity || 0));
+      if (!productId || quantity <= 0) continue;
+
+      const { data: product, error: productError } = await supabase
+        .from('products')
+        .select('*')
+        .eq('id', productId)
+        .single();
+      if (productError) throw productError;
+
+      const baseDelta = orderType === 'sale_return' ? quantity : -quantity;
+      const delta = mode === 'reverse' ? -baseDelta : baseDelta;
+      const beforeQty = Number(product.quantity || 0);
+      const afterQty = beforeQty + delta;
+      if (afterQty < 0) throw new Error(`商品「${product.name}」库存不足`);
+
+      const { error: updateError } = await supabase
+        .from('products')
+        .update({ quantity: afterQty })
+        .eq('id', productId);
+      if (updateError) throw updateError;
+
+      const unitPrice = Number(item.price || 0);
+      const amount = Number((quantity * unitPrice).toFixed(2));
+      const logType = mode === 'reverse' ? 'system_delete' : orderType;
+      const remarkParts = [
+        `单号：${order.order_no}`,
+        `客户：${order.customer_name || ''}`,
+        `单价：${unitPrice}`,
+        item.remark || order.remark || '',
+      ].filter(Boolean);
+
+      const { error: logError } = await supabase.from('stock_logs').insert({
+        product_id: productId,
+        product_sku: product.sku || item.product_sku || '',
+        product_name: product.name || item.product_name || '',
+        category_id: product.category_id || null,
+        category_name: product.category_name || item.category_name || null,
+        customer_name: order.customer_name || null,
+        type: logType,
+        quantity,
+        before_qty: beforeQty,
+        after_qty: afterQty,
+        unit_price: unitPrice,
+        amount,
+        order_id: order.id || null,
+        order_no: order.order_no || null,
+        operator: order.operator || operator,
+        remark: remarkParts.join('；'),
+      });
+      if (logError) throw logError;
+    }
+  }
+
   async function saveDeliveryOrder(order) {
     if (!order.customer_id) throw new Error('请选择客户。');
     if (!order.items.length) throw new Error('请至少添加一条商品明细。');
@@ -859,12 +924,22 @@ function ErpApp({ currentUser, onLogout }) {
       order_no: order.order_no,
       customer_id: order.customer_id,
       customer_name: customer?.name || order.customer_name,
+      order_type: order.order_type || 'sale_out',
+      status: order.status || 'saved',
       delivery_date: order.delivery_date,
       operator: order.operator || operator,
       remark: order.remark || null,
     };
 
     if (order.id) {
+      const { data: existingOrder, error: existingError } = await supabase
+        .from('delivery_orders')
+        .select('*, delivery_order_items(*)')
+        .eq('id', order.id)
+        .single();
+      if (existingError) throw existingError;
+      await applyDeliveryStock(existingOrder, existingOrder.delivery_order_items || [], 'reverse');
+
       const { error: updateError } = await supabase.from('delivery_orders').update(payload).eq('id', order.id);
       if (updateError) throw updateError;
       const { error: deleteError } = await supabase.from('delivery_order_items').delete().eq('delivery_order_id', order.id);
@@ -873,6 +948,7 @@ function ErpApp({ currentUser, onLogout }) {
         .from('delivery_order_items')
         .insert(cleanItems.map((item) => ({ ...item, delivery_order_id: order.id })));
       if (insertError) throw insertError;
+      await applyDeliveryStock({ ...payload, id: order.id }, cleanItems, 'apply');
       return;
     }
 
@@ -883,21 +959,28 @@ function ErpApp({ currentUser, onLogout }) {
       .single();
     if (insertOrderError) throw insertOrderError;
 
+    const savedOrder = { ...payload, id: data.id };
     const { error: insertItemsError } = await supabase
       .from('delivery_order_items')
       .insert(cleanItems.map((item) => ({ ...item, delivery_order_id: data.id })));
     if (insertItemsError) throw insertItemsError;
+    await applyDeliveryStock(savedOrder, cleanItems, 'apply');
   }
 
   async function deleteDeliveryOrder(order) {
-    if (!window.confirm(`确认删除送货单「${order.order_no}」吗？`)) return;
+    if (!window.confirm(`确认删除单据「${order.order_no}」吗？删除后会自动恢复库存并记录系统删除流水。`)) return;
     await runAction(async () => {
+      const fullOrder = order.delivery_order_items
+        ? order
+        : (await supabase.from('delivery_orders').select('*, delivery_order_items(*)').eq('id', order.id).single()).data;
+      if (!fullOrder) throw new Error('单据不存在');
+      await applyDeliveryStock(fullOrder, fullOrder.delivery_order_items || [], 'reverse');
       const { error } = await supabase.from('delivery_orders').delete().eq('id', order.id);
       if (error) throw error;
-    }, '送货单已删除。');
+    }, '单据已删除，库存已恢复。');
   }
 
-  async function createDeliveryDraft() {
+  async function createDeliveryDraft(orderType = 'sale_out') {
     const { data, error } = await supabase.rpc('next_delivery_order_no');
     if (error) {
       setToast({ type: 'error', text: error.message });
@@ -908,6 +991,8 @@ function ErpApp({ currentUser, onLogout }) {
       customer_id: '',
       customer_name: '',
       delivery_date: todayDate(),
+      order_type: orderType,
+      status: 'saved',
       operator,
       remark: '',
       items: [emptyDeliveryItem()],
@@ -923,8 +1008,7 @@ function ErpApp({ currentUser, onLogout }) {
     { id: 'company', label: '公司资料', icon: Building2 },
     { id: 'users', label: '用户管理', icon: Users },
     { id: 'purchase', label: '采购管理', icon: PackagePlus },
-    { id: 'sales', label: '销售管理', icon: PackageMinus },
-    { id: 'delivery', label: '送货单管理', icon: Truck },
+    { id: 'sales', label: '送货管理', icon: Truck },
     { id: 'inventory', label: '库存流水', icon: ClipboardList },
   ];
 
@@ -1049,6 +1133,7 @@ function ErpApp({ currentUser, onLogout }) {
               mode="purchase"
               partners={suppliers}
               products={products}
+              categories={categories}
               logs={logs}
               canSubmit={can(currentUser, 'purchaseStock')}
               onPrint={() => setPrintStockDocument({ title: '采购入库单', type: 'purchase_in' })}
@@ -1056,24 +1141,14 @@ function ErpApp({ currentUser, onLogout }) {
             />
           )}
           {activeTab === 'sales' && (
-            <PurchaseSalesView
-              mode="sales"
-              partners={customers}
-              products={products}
-              logs={logs}
-              canSubmit={can(currentUser, 'salesStock')}
-              onPrint={() => setPrintStockDocument({ title: '销售出库单', type: 'sale_out' })}
-              onSubmit={(payload) => runAction(() => moveStock(payload), '库存已更新，销售流水已写入。')}
-            />
-          )}
-          {activeTab === 'delivery' && (
-            <DeliveryOrdersView
+            <DeliveryManagementView
               orders={orders}
               customers={customers}
               products={products}
+              categories={categories}
               canMutate={can(currentUser, 'mutateDelivery')}
               canDelete={can(currentUser, 'deleteDelivery')}
-              onAdd={createDeliveryDraft}
+              onCreate={createDeliveryDraft}
               onEdit={(order) => setDeliveryModal(normalizeOrderForEdit(order))}
               onDelete={deleteDeliveryOrder}
               onPrint={setPrintOrder}
@@ -1200,17 +1275,33 @@ function ErpApp({ currentUser, onLogout }) {
 
 function buildStats(products, logs) {
   const start = todayIsoStart();
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
   const todayLogs = logs.filter((log) => log.created_at >= start);
+  const monthLogs = logs.filter((log) => log.created_at >= monthStart);
+  const byType = (items, type) => items.filter((log) => log.type === type);
+  const sumQty = (items) => items.reduce((sum, log) => sum + Number(log.quantity || 0), 0);
+  const sumAmount = (items) => items.reduce((sum, log) => {
+    const parsed = parseLogRemark(log.remark);
+    const price = Number(log.unit_price || parsed.price || 0);
+    return sum + Number(log.amount || (Number(log.quantity || 0) * price));
+  }, 0);
+  const returnStats = (type) => ({
+    todayQty: sumQty(byType(todayLogs, type)),
+    monthQty: sumQty(byType(monthLogs, type)),
+    totalQty: sumQty(byType(logs, type)),
+    todayAmount: sumAmount(byType(todayLogs, type)),
+    monthAmount: sumAmount(byType(monthLogs, type)),
+    totalAmount: sumAmount(byType(logs, type)),
+  });
   return {
     productCount: products.length,
     totalQuantity: products.reduce((sum, product) => sum + Number(product.quantity || 0), 0),
     warningCount: products.filter((product) => Number(product.quantity) < Number(product.warning_qty)).length,
-    purchaseIn: todayLogs
-      .filter((log) => log.type === 'purchase_in')
-      .reduce((sum, log) => sum + Number(log.quantity || 0), 0),
-    saleOut: todayLogs
-      .filter((log) => log.type === 'sale_out')
-      .reduce((sum, log) => sum + Number(log.quantity || 0), 0),
+    purchaseIn: sumQty(byType(todayLogs, 'purchase_in')),
+    saleOut: sumQty(byType(todayLogs, 'sale_out')),
+    purchaseReturn: returnStats('purchase_return'),
+    saleReturn: returnStats('sale_return'),
   };
 }
 
@@ -1240,6 +1331,11 @@ function Dashboard({ stats, products, logs, loading }) {
       </div>
 
       <div className="grid gap-4 xl:grid-cols-2">
+        <ReturnStatsCard title="采购退货统计" stats={stats.purchaseReturn} />
+        <ReturnStatsCard title="销售退货统计" stats={stats.saleReturn} />
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-2">
         <Panel title="库存预警列表" icon={AlertTriangle}>
           <div className="space-y-2">
             {warningProducts.slice(0, 8).map((product) => (
@@ -1262,6 +1358,27 @@ function Dashboard({ stats, products, logs, loading }) {
         </Panel>
       </div>
     </div>
+  );
+}
+
+function ReturnStatsCard({ title, stats }) {
+  const rows = [
+    ['今日', stats.todayQty, stats.todayAmount],
+    ['本月', stats.monthQty, stats.monthAmount],
+    ['累计', stats.totalQty, stats.totalAmount],
+  ];
+  return (
+    <Panel title={title} icon={ClipboardList}>
+      <div className="grid gap-2">
+        {rows.map(([label, qty, amount]) => (
+          <div key={label} className="grid grid-cols-3 rounded-lg bg-slate-50 px-3 py-2 text-sm">
+            <span className="font-medium text-slate-700">{label}</span>
+            <span>数量：{formatNumber(qty)}</span>
+            <span>金额：¥{formatMoney(amount)}</span>
+          </div>
+        ))}
+      </div>
+    </Panel>
   );
 }
 
@@ -1620,7 +1737,7 @@ function LogoPreview({ url, small = false }) {
   );
 }
 
-function PurchaseSalesView({ mode, partners, products, logs = [], canSubmit, onSubmit, onPrint }) {
+function PurchaseSalesView({ mode, partners, products, categories = [], logs = [], canSubmit, onSubmit, onPrint }) {
   const isPurchase = mode === 'purchase';
   const title = isPurchase ? '采购管理' : '销售管理';
   const partnerLabel = isPurchase ? '供应商' : '客户';
@@ -1651,6 +1768,7 @@ function PurchaseSalesView({ mode, partners, products, logs = [], canSubmit, onS
               partnerLabel={partnerLabel}
               partners={partners}
               products={products}
+              categories={categories}
               onSubmit={onSubmit}
             />
           ))}
@@ -1667,14 +1785,18 @@ function PurchaseSalesView({ mode, partners, products, logs = [], canSubmit, onS
   );
 }
 
-function StockBusinessCard({ action, partnerLabel, partners, products, onSubmit }) {
+function StockBusinessCard({ action, partnerLabel, partners, products, categories = [], onSubmit }) {
   const [partnerId, setPartnerId] = useState('');
+  const [categoryId, setCategoryId] = useState('');
   const [productId, setProductId] = useState('');
   const [quantity, setQuantity] = useState(1);
   const [price, setPrice] = useState(0);
   const [remark, setRemark] = useState('');
   const product = products.find((item) => item.id === productId);
   const partner = partners.find((item) => item.id === partnerId);
+  const filteredProducts = categoryId
+    ? products.filter((item) => String(item.category_id || '') === String(categoryId))
+    : products;
 
   useEffect(() => {
     if (product) setPrice(product[action.priceField] || 0);
@@ -1724,9 +1846,16 @@ function StockBusinessCard({ action, partnerLabel, partners, products, onSubmit 
           </select>
         </Field>
         <Field label="商品">
+          <select className="input mb-2" value={categoryId} onChange={(event) => {
+            setCategoryId(event.target.value);
+            setProductId('');
+          }}>
+            <option value="">全部商品类型</option>
+            {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+          </select>
           <select className="input" value={productId} onChange={(event) => setProductId(event.target.value)} required>
             <option value="">请选择</option>
-            {products.map((item) => <option key={item.id} value={item.id}>{item.name} / {item.sku} / 库存 {item.quantity}</option>)}
+            {filteredProducts.map((item) => <option key={item.id} value={item.id}>{item.name} / {item.category_name || '未分类'} / {item.sku} / 库存 {item.quantity}</option>)}
           </select>
         </Field>
         <Field label="数量">
@@ -1746,44 +1875,75 @@ function StockBusinessCard({ action, partnerLabel, partners, products, onSubmit 
   );
 }
 
-function DeliveryOrdersView({ orders, customers, products, canMutate, canDelete, onAdd, onEdit, onDelete, onPrint }) {
+function DeliveryManagementView({ orders, customers, products, canMutate, canDelete, onCreate, onEdit, onDelete, onPrint }) {
   const [query, setQuery] = useState('');
-  const rows = orders.filter((order) => matchesQuery(order, query, ['order_no', 'customer_name', 'operator']));
+  const [typeFilter, setTypeFilter] = useState('');
+  const [page, setPage] = useState(1);
+  const rows = orders
+    .filter((order) => ['sale_out', 'sale_return'].includes(order.order_type || 'sale_out'))
+    .filter((order) => (typeFilter ? (order.order_type || 'sale_out') === typeFilter : true))
+    .filter((order) => matchesQuery(order, query, ['order_no', 'customer_name', 'operator']))
+    .sort((a, b) => new Date(b.created_at || b.delivery_date) - new Date(a.created_at || a.delivery_date));
+  const pageSize = 5;
+  const pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
+  const safePage = Math.min(page, pageCount);
+  const pageRows = rows.slice((safePage - 1) * pageSize, safePage * pageSize);
+
+  useEffect(() => {
+    setPage(1);
+  }, [query, typeFilter]);
 
   return (
     <Panel
-      title="送货单管理"
-      subtitle="新建、查看、编辑、删除、打印和导出 PDF。"
+      title="送货管理"
+      subtitle="销售出库和销售退货统一使用送货单模式，保存后自动更新库存并写入库存流水。"
       icon={Truck}
-      action={canMutate ? <button className="btn-primary" onClick={onAdd}><Plus size={16} />新建送货单</button> : null}
+      action={canMutate ? (
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <button className="btn-primary" onClick={() => onCreate('sale_out')}><Plus size={16} />销售出库</button>
+          <button className="btn-secondary" onClick={() => onCreate('sale_return')}><Plus size={16} />销售退货</button>
+        </div>
+      ) : null}
     >
-      <SearchBox value={query} onChange={setQuery} placeholder="按送货单号、客户名称或制单人搜索" />
+      <div className="grid gap-3 md:grid-cols-[1fr_180px]">
+        <SearchBox value={query} onChange={setQuery} placeholder="按单号、客户名称或制单人搜索" />
+        <select className="input" value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}>
+          <option value="">全部类型</option>
+          <option value="sale_out">销售出库</option>
+          <option value="sale_return">销售退货</option>
+        </select>
+      </div>
       <div className="table-scroll mt-4 overflow-x-auto">
-        <table className="data-table min-w-[900px]">
+        <table className="data-table min-w-[980px]">
           <thead>
             <tr>
-              <th>送货单号</th>
+              <th>单号</th>
+              <th>类型</th>
               <th>客户名称</th>
-              <th>送货日期</th>
+              <th>日期</th>
+              <th>商品数量</th>
+              <th>总金额</th>
               <th>制单人</th>
-              <th>合计金额</th>
-              <th>备注</th>
+              <th>状态</th>
               <th className="text-right">操作</th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((order) => (
+            {pageRows.map((order) => (
               <tr key={order.id}>
                 <td className="font-medium">{order.order_no}</td>
+                <td>{deliveryOrderTypeLabels[order.order_type || 'sale_out']}</td>
                 <td>{order.customer_name}</td>
                 <td>{order.delivery_date}</td>
-                <td>{order.operator}</td>
+                <td>{formatNumber(totalOrderQuantity(order.delivery_order_items))}</td>
                 <td>¥{formatMoney(totalOrderAmount(order.delivery_order_items))}</td>
-                <td>{order.remark || '-'}</td>
+                <td>{order.operator}</td>
+                <td>{order.status || 'saved'}</td>
                 <td>
                   <div className="flex justify-end gap-2">
-                    <button className="icon-button" title="查看/打印" onClick={() => onPrint(order)}><FileText size={16} /></button>
+                    <button className="icon-button" title="查看" onClick={() => onPrint(order)}><FileText size={16} /></button>
                     {canMutate && <button className="icon-button" title="编辑" onClick={() => onEdit(order)}><Pencil size={16} /></button>}
+                    <button className="icon-button" title="打印" onClick={() => onPrint(order)}><Printer size={16} /></button>
                     {canDelete && <button className="icon-button text-red-600" title="删除" onClick={() => onDelete(order)}><Trash2 size={16} /></button>}
                   </div>
                 </td>
@@ -1792,7 +1952,8 @@ function DeliveryOrdersView({ orders, customers, products, canMutate, canDelete,
           </tbody>
         </table>
       </div>
-      {rows.length === 0 && <EmptyText text="暂无送货单。" />}
+      {rows.length > pageSize && <Pagination page={safePage} pageCount={pageCount} onPageChange={setPage} />}
+      {rows.length === 0 && <EmptyText text="暂无送货管理单据。" />}
       {customers.length === 0 && <EmptyText text="提示：请先在客户管理中新增客户。" />}
       {products.length === 0 && <EmptyText text="提示：请先在商品管理中新增商品。" />}
     </Panel>
@@ -1806,12 +1967,15 @@ function InventoryView({ logs, products, categories, canAdjust, canDelete, onAdj
 
   const rows = logs.filter((log) => {
     const parsed = parseLogRemark(log.remark);
-    const productText = `${log.products?.name || ''} ${log.products?.sku || ''}`.toLowerCase();
+    const productText = `${log.product_name || log.products?.name || ''} ${log.product_sku || log.products?.sku || ''}`.toLowerCase();
+    const customerName = log.customer_name || parsed.customer || '';
+    const supplierName = log.supplier_name || parsed.supplier || '';
+    const categoryId = log.category_id || log.products?.category_id || '';
     if (filters.productQuery && !productText.includes(filters.productQuery.trim().toLowerCase())) return false;
-    if (filters.customer && !parsed.customer.toLowerCase().includes(filters.customer.trim().toLowerCase())) return false;
-    if (filters.supplier && !parsed.supplier.toLowerCase().includes(filters.supplier.trim().toLowerCase())) return false;
+    if (filters.customer && !customerName.toLowerCase().includes(filters.customer.trim().toLowerCase())) return false;
+    if (filters.supplier && !supplierName.toLowerCase().includes(filters.supplier.trim().toLowerCase())) return false;
     if (filters.type && log.type !== filters.type) return false;
-    if (filters.categoryId && String(log.products?.category_id || '') !== String(filters.categoryId)) return false;
+    if (filters.categoryId && String(categoryId) !== String(filters.categoryId)) return false;
     if (filters.start && log.created_at < `${filters.start}T00:00:00`) return false;
     if (filters.end && log.created_at > `${filters.end}T23:59:59`) return false;
     return true;
@@ -1820,18 +1984,21 @@ function InventoryView({ logs, products, categories, canAdjust, canDelete, onAdj
   async function exportExcel() {
     const data = rows.map((log) => {
       const parsed = parseLogRemark(log.remark);
-      const price = parsed.price || 0;
+      const price = Number(log.unit_price || parsed.price || 0);
       const quantity = Number(log.quantity || 0);
       return {
         日期: new Date(log.created_at).toLocaleString('zh-CN'),
-        商品编号: log.products?.sku || '',
-        商品名称: log.products?.name || '已删除商品',
-        客户: parsed.customer,
-        供应商: parsed.supplier,
+        商品编号: log.product_sku || log.products?.sku || '',
+        商品名称: log.product_name || log.products?.name || '已删除商品',
+        商品类型: log.category_name || log.products?.category_name || '',
+        客户: log.customer_name || parsed.customer,
+        供应商: log.supplier_name || parsed.supplier,
         类型: stockTypeLabels[log.type] || log.type,
         数量: quantity,
+        操作前库存: log.before_qty ?? '',
+        操作后库存: log.after_qty ?? '',
         单价: price,
-        金额: Number((quantity * price).toFixed(2)),
+        金额: Number(log.amount || (quantity * price).toFixed(2)),
         操作人: log.operator,
         备注: log.remark || '',
       };
@@ -1991,8 +2158,9 @@ function LogRow({ log, compact = false, canDelete = false, onDelete }) {
           <span className={`rounded px-2 py-1 text-xs font-medium ${stockTypeTones[log.type] || 'bg-slate-100 text-slate-700'}`}>
             {stockTypeLabels[log.type] || log.type}
           </span>
-          <span className="font-medium">{log.products?.name || '已删除商品'}</span>
-          <span className="text-sm text-slate-500">{log.products?.sku}</span>
+          <span className="font-medium">{log.product_name || log.products?.name || '已删除商品'}</span>
+          <span className="text-sm text-slate-500">{log.product_sku || log.products?.sku}</span>
+          {(log.category_name || log.products?.category_name) && <span className="text-sm text-slate-500">{log.category_name || log.products?.category_name}</span>}
         </div>
         {!compact && (
           <p className="mt-1 text-sm text-slate-500">
@@ -2003,6 +2171,9 @@ function LogRow({ log, compact = false, canDelete = false, onDelete }) {
       <div className="flex items-center gap-3 text-left sm:text-right">
         <div>
           <p className="font-semibold">{formatNumber(log.quantity)} {log.products?.unit || ''}</p>
+          {!compact && (log.before_qty !== null && log.before_qty !== undefined) && (
+            <p className="text-xs text-slate-500">库存 {formatNumber(log.before_qty)} → {formatNumber(log.after_qty)}</p>
+          )}
           <p className="text-xs text-slate-500">{new Date(log.created_at).toLocaleString('zh-CN')}</p>
         </div>
         {canDelete && !compact && (
@@ -2259,6 +2430,7 @@ function DeliveryOrderModal({ initialOrder, customers, products, onClose, onSave
       if (product) {
         next.product_sku = product.sku;
         next.product_name = product.name;
+        next.category_name = product.category_name || '未分类';
         next.unit = product.unit;
         if (!next.price) next.price = product.sell_price || 0;
       }
@@ -2276,17 +2448,23 @@ function DeliveryOrderModal({ initialOrder, customers, products, onClose, onSave
   }
 
   return (
-    <Modal title={order.id ? '编辑送货单' : '新建送货单'} onClose={onClose} wide>
+    <Modal title={`${order.id ? '编辑' : '新建'}${deliveryOrderTypeLabels[order.order_type || 'sale_out'] || '送货单'}`} onClose={onClose} wide>
       <form className="space-y-4" onSubmit={submit}>
         <div className="grid gap-4 md:grid-cols-4">
           <Field label="送货单号"><input className="input" value={order.order_no} onChange={(e) => setOrder({ ...order, order_no: e.target.value })} required /></Field>
+          <Field label="业务类型">
+            <select className="input" value={order.order_type || 'sale_out'} onChange={(e) => setOrder({ ...order, order_type: e.target.value })}>
+              <option value="sale_out">销售出库</option>
+              <option value="sale_return">销售退货</option>
+            </select>
+          </Field>
           <Field label="客户">
             <select className="input" value={order.customer_id} onChange={(e) => setOrder({ ...order, customer_id: e.target.value })} required>
               <option value="">请选择客户</option>
               {customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.name}</option>)}
             </select>
           </Field>
-          <Field label="送货日期"><input className="input" type="date" value={order.delivery_date} onChange={(e) => setOrder({ ...order, delivery_date: e.target.value })} required /></Field>
+          <Field label="日期"><input className="input" type="date" value={order.delivery_date} onChange={(e) => setOrder({ ...order, delivery_date: e.target.value })} required /></Field>
           <Field label="制单人"><input className="input" value={order.operator} onChange={(e) => setOrder({ ...order, operator: e.target.value })} required /></Field>
         </div>
 
@@ -2295,8 +2473,8 @@ function DeliveryOrderModal({ initialOrder, customers, products, onClose, onSave
             <thead>
               <tr>
                 <th>商品</th>
+                <th>商品类型</th>
                 <th>产品编号</th>
-                <th>规格型号</th>
                 <th>单位</th>
                 <th>数量</th>
                 <th>单价</th>
@@ -2311,11 +2489,11 @@ function DeliveryOrderModal({ initialOrder, customers, products, onClose, onSave
                   <td>
                     <select className="input" value={item.product_id} onChange={(e) => updateItem(index, { product_id: e.target.value })} required>
                       <option value="">请选择商品</option>
-                      {products.map((product) => <option key={product.id} value={product.id}>{product.name} / {product.sku}</option>)}
+                      {products.map((product) => <option key={product.id} value={product.id}>{product.name} / {product.category_name || '未分类'} / {product.sku}</option>)}
                     </select>
                   </td>
+                  <td>{item.category_name || products.find((product) => String(product.id) === String(item.product_id))?.category_name || '-'}</td>
                   <td>{item.product_sku || '-'}</td>
-                  <td><input className="input" value={item.spec || ''} onChange={(e) => updateItem(index, { spec: e.target.value })} /></td>
                   <td>{item.unit || '-'}</td>
                   <td><input className="input" type="number" min="0.01" step="0.01" value={item.quantity} onChange={(e) => updateItem(index, { quantity: e.target.value })} required /></td>
                   <td><input className="input" type="number" min="0" step="0.01" value={item.price} onChange={(e) => updateItem(index, { price: e.target.value })} /></td>
@@ -2778,6 +2956,29 @@ function normalizeOrderForEdit(order) {
 
 function totalOrderAmount(items = []) {
   return items.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+}
+
+function totalOrderQuantity(items = []) {
+  return items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+}
+
+function Pagination({ page, pageCount, onPageChange }) {
+  return (
+    <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
+      <button className="btn-secondary" type="button" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>上一页</button>
+      {Array.from({ length: pageCount }, (_, index) => index + 1).map((item) => (
+        <button
+          key={item}
+          className={item === page ? 'btn-primary' : 'btn-secondary'}
+          type="button"
+          onClick={() => onPageChange(item)}
+        >
+          {item}
+        </button>
+      ))}
+      <button className="btn-secondary" type="button" disabled={page >= pageCount} onClick={() => onPageChange(page + 1)}>下一页</button>
+    </div>
+  );
 }
 
 function Panel({ title, subtitle, icon: Icon, action, children }) {
