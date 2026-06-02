@@ -4,6 +4,8 @@ create table if not exists public.products (
   id bigint generated always as identity primary key,
   name text not null,
   sku text not null unique,
+  category_id bigint,
+  category_name text,
   quantity integer not null default 0 check (quantity >= 0),
   unit text not null default 'pcs',
   cost_price numeric(12, 2) not null default 0,
@@ -17,6 +19,39 @@ add column if not exists is_deleted boolean not null default false;
 
 alter table public.products
 add column if not exists deleted_at timestamptz;
+
+create table if not exists public.product_categories (
+  id bigint generated always as identity primary key,
+  name text not null unique,
+  remark text,
+  created_at timestamptz not null default now()
+);
+
+alter table public.products
+add column if not exists category_id bigint;
+
+alter table public.products
+add column if not exists category_name text;
+
+alter table public.products
+drop constraint if exists products_category_id_fkey;
+
+alter table public.products
+add constraint products_category_id_fkey
+foreign key (category_id) references public.product_categories(id) on delete set null;
+
+update public.products
+set category_name = coalesce(nullif(category_name, ''), '未分类')
+where category_name is null or category_name = '';
+
+insert into public.product_categories (name, remark)
+values
+  ('墨水', '默认商品类型'),
+  ('包材', '默认商品类型'),
+  ('胶带', '默认商品类型'),
+  ('配件', '默认商品类型'),
+  ('其他', '默认商品类型')
+on conflict (name) do nothing;
 
 create table if not exists public.stock_logs (
   id bigint generated always as identity primary key,
@@ -108,6 +143,8 @@ create index if not exists idx_products_name on public.products using gin (to_ts
 create index if not exists idx_products_sku on public.products (sku);
 create unique index if not exists idx_products_sku_unique on public.products (sku);
 create index if not exists idx_products_is_deleted on public.products (is_deleted);
+create index if not exists idx_products_category_id on public.products (category_id);
+create index if not exists idx_product_categories_name on public.product_categories (name);
 create index if not exists idx_customers_name on public.customers (name);
 create index if not exists idx_suppliers_name on public.suppliers (name);
 create index if not exists idx_stock_logs_created_at on public.stock_logs (created_at desc);
@@ -121,6 +158,7 @@ create index if not exists idx_delivery_order_items_order_id on public.delivery_
 create index if not exists idx_delivery_order_items_product_id on public.delivery_order_items (product_id);
 
 alter table public.products enable row level security;
+alter table public.product_categories enable row level security;
 alter table public.stock_logs enable row level security;
 alter table public.stock_log_delete_audit enable row level security;
 alter table public.customers enable row level security;
@@ -129,6 +167,7 @@ alter table public.delivery_orders enable row level security;
 alter table public.delivery_order_items enable row level security;
 
 drop policy if exists "Authenticated users can manage products" on public.products;
+drop policy if exists "Authenticated users can manage product categories" on public.product_categories;
 drop policy if exists "Authenticated users can manage stock logs" on public.stock_logs;
 drop policy if exists "Authenticated users can read stock logs" on public.stock_logs;
 drop policy if exists "Authenticated users can insert stock logs" on public.stock_logs;
@@ -141,6 +180,9 @@ drop policy if exists "Authenticated users can manage delivery order items" on p
 
 create policy "Authenticated users can manage products"
 on public.products for all to authenticated using (true) with check (true);
+
+create policy "Authenticated users can manage product categories"
+on public.product_categories for all to authenticated using (true) with check (true);
 
 create sequence if not exists public.product_sku_seq;
 
@@ -481,6 +523,7 @@ $$;
 grant execute on function public.delete_stock_log(bigint, text) to anon, authenticated;
 
 drop policy if exists "Development users can manage products" on public.products;
+drop policy if exists "Development users can manage product categories" on public.product_categories;
 drop policy if exists "Development users can manage stock logs" on public.stock_logs;
 drop policy if exists "Development users can read stock logs" on public.stock_logs;
 drop policy if exists "Development users can insert stock logs" on public.stock_logs;
@@ -493,6 +536,9 @@ drop policy if exists "Development users can manage delivery order items" on pub
 
 create policy "Development users can manage products"
 on public.products for all to anon, authenticated using (true) with check (true);
+
+create policy "Development users can manage product categories"
+on public.product_categories for all to anon, authenticated using (true) with check (true);
 
 create policy "Development users can read stock logs"
 on public.stock_logs for select to anon, authenticated using (true);

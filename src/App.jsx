@@ -15,6 +15,7 @@ import {
   Plus,
   Printer,
   Search,
+  Tags,
   Trash2,
   Truck,
   Users,
@@ -30,11 +31,18 @@ const BUILD_TIME = __BUILD_TIME__;
 const emptyProduct = {
   name: '',
   sku: '',
+  category_id: '',
+  category_name: '',
   quantity: 0,
   unit: '个',
   cost_price: 0,
   sell_price: 0,
   warning_qty: 0,
+};
+
+const emptyCategory = {
+  name: '',
+  remark: '',
 };
 
 const productUnitOptions = ['KG', '桶', '条', '个'];
@@ -81,15 +89,16 @@ const roleLabels = {
 };
 
 const menuPermissions = {
-  admin: ['dashboard', 'products', 'customers', 'suppliers', 'company', 'users', 'purchase', 'sales', 'delivery', 'inventory'],
-  warehouse: ['dashboard', 'products', 'purchase', 'sales', 'inventory'],
-  sales: ['dashboard', 'products', 'customers', 'sales', 'delivery'],
-  viewer: ['dashboard', 'products', 'customers', 'suppliers', 'delivery', 'inventory'],
+  admin: ['dashboard', 'categories', 'products', 'customers', 'suppliers', 'company', 'users', 'purchase', 'sales', 'delivery', 'inventory'],
+  warehouse: ['dashboard', 'categories', 'products', 'purchase', 'sales', 'inventory'],
+  sales: ['dashboard', 'categories', 'products', 'customers', 'sales', 'delivery'],
+  viewer: ['dashboard', 'categories', 'products', 'customers', 'suppliers', 'delivery', 'inventory'],
 };
 
 const actionPermissions = {
   manageUsers: ['admin'],
   manageCompany: ['admin'],
+  manageCategories: ['admin'],
   mutateProducts: ['admin'],
   deleteProducts: ['admin'],
   mutateCustomers: ['admin', 'sales'],
@@ -453,6 +462,7 @@ function LoginPage({ onLogin }) {
 function ErpApp({ currentUser, onLogout }) {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [products, setProducts] = useState([]);
+  const [categories, setCategories] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
   const [logs, setLogs] = useState([]);
@@ -461,6 +471,7 @@ function ErpApp({ currentUser, onLogout }) {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState(null);
+  const [categoryModal, setCategoryModal] = useState(null);
   const [productModal, setProductModal] = useState(null);
   const [partnerModal, setPartnerModal] = useState(null);
   const [companyModal, setCompanyModal] = useState(null);
@@ -475,6 +486,7 @@ function ErpApp({ currentUser, onLogout }) {
     setLoading(true);
     const [
       productsResult,
+      categoriesResult,
       customersResult,
       suppliersResult,
       logsResult,
@@ -483,11 +495,12 @@ function ErpApp({ currentUser, onLogout }) {
       usersResult,
     ] = await Promise.all([
       supabase.from('products').select('*').eq('is_deleted', false).order('created_at', { ascending: false }),
+      supabase.from('product_categories').select('*').order('created_at', { ascending: false }),
       supabase.from('customers').select('*').order('created_at', { ascending: false }),
       supabase.from('suppliers').select('*').order('created_at', { ascending: false }),
       supabase
         .from('stock_logs')
-        .select('*, products(name, sku, unit)')
+        .select('*, products(name, sku, unit, category_id, category_name)')
         .order('created_at', { ascending: false })
         .limit(5000),
       supabase
@@ -506,6 +519,7 @@ function ErpApp({ currentUser, onLogout }) {
 
     const error =
       productsResult.error ||
+      categoriesResult.error ||
       customersResult.error ||
       suppliersResult.error ||
       logsResult.error ||
@@ -517,6 +531,7 @@ function ErpApp({ currentUser, onLogout }) {
       setToast({ type: 'error', text: error.message });
     } else {
       setProducts(productsResult.data || []);
+      setCategories(categoriesResult.data || []);
       setCustomers(customersResult.data || []);
       setSuppliers(suppliersResult.data || []);
       setLogs(logsResult.data || []);
@@ -545,8 +560,11 @@ function ErpApp({ currentUser, onLogout }) {
   }
 
   async function saveProduct(product) {
+    const category = categories.find((item) => String(item.id) === String(product.category_id));
     const payload = {
       name: product.name.trim(),
+      category_id: category ? category.id : null,
+      category_name: category ? category.name : null,
       quantity: Number(product.quantity || 0),
       unit: product.unit.trim(),
       cost_price: Number(product.cost_price || 0),
@@ -557,11 +575,49 @@ function ErpApp({ currentUser, onLogout }) {
     if (!payload.name) throw new Error('请填写商品名称。');
     if (!payload.unit) throw new Error('请选择单位');
 
+    if (!category) throw new Error('请选择商品类型');
+
     const request = product.id
       ? supabase.from('products').update(payload).eq('id', product.id)
       : supabase.from('products').insert(payload);
     const { error } = await request;
     if (error) throw error;
+  }
+
+  async function saveCategory(category) {
+    const payload = {
+      name: category.name.trim(),
+      remark: category.remark?.trim() || null,
+    };
+    if (!payload.name) throw new Error('请填写商品类型名称');
+
+    const request = category.id
+      ? supabase.from('product_categories').update(payload).eq('id', category.id)
+      : supabase.from('product_categories').insert(payload);
+    const { error } = await request;
+    if (error) throw error;
+
+    if (category.id) {
+      const { error: syncError } = await supabase
+        .from('products')
+        .update({ category_name: payload.name })
+        .eq('category_id', category.id);
+      if (syncError) throw syncError;
+    }
+  }
+
+  async function deleteCategory(category) {
+    if (!window.confirm(`确认删除商品类型「${category.name}」吗？已归属该类型的商品会变为未分类。`)) return;
+    await runAction(async () => {
+      const { error: productError } = await supabase
+        .from('products')
+        .update({ category_id: null, category_name: '未分类' })
+        .eq('category_id', category.id);
+      if (productError) throw productError;
+
+      const { error } = await supabase.from('product_categories').delete().eq('id', category.id);
+      if (error) throw error;
+    }, '商品类型已删除，相关商品已设为未分类。');
   }
 
   async function deleteProduct(product) {
@@ -860,6 +916,7 @@ function ErpApp({ currentUser, onLogout }) {
 
   const navItems = [
     { id: 'dashboard', label: '仪表盘', icon: LayoutDashboard },
+    { id: 'categories', label: '商品类型', icon: Tags },
     { id: 'products', label: '商品管理', icon: Boxes },
     { id: 'customers', label: '客户管理', icon: Users },
     { id: 'suppliers', label: '供应商管理', icon: Building2 },
@@ -931,9 +988,19 @@ function ErpApp({ currentUser, onLogout }) {
         <section className="min-w-0 print:hidden">
           {!canAccess(currentUser, activeTab) && <NoPermission />}
           {activeTab === 'dashboard' && <Dashboard stats={stats} products={products} logs={logs} loading={loading} />}
+          {activeTab === 'categories' && (
+            <ProductCategoriesView
+              categories={categories}
+              canMutate={can(currentUser, 'manageCategories')}
+              onAdd={() => setCategoryModal({ ...emptyCategory })}
+              onEdit={(category) => setCategoryModal(category)}
+              onDelete={deleteCategory}
+            />
+          )}
           {activeTab === 'products' && (
             <ProductsView
               products={products}
+              categories={categories}
               loading={loading}
               canMutate={can(currentUser, 'mutateProducts')}
               canDelete={can(currentUser, 'deleteProducts')}
@@ -1016,6 +1083,7 @@ function ErpApp({ currentUser, onLogout }) {
             <InventoryView
               logs={logs}
               products={products}
+              categories={categories}
               canAdjust={can(currentUser, 'adjustStock')}
               canDelete={can(currentUser, 'deleteStockLogs')}
               onAdjust={(payload) => runAction(() => moveStock(payload), '库存调整已完成。')}
@@ -1038,10 +1106,22 @@ function ErpApp({ currentUser, onLogout }) {
       {productModal && (
         <ProductModal
           initialProduct={productModal}
+          categories={categories}
           onClose={() => setProductModal(null)}
           onSave={async (product) => {
             const ok = await runAction(() => saveProduct(product), product.id ? '商品已更新。' : '商品已新增。');
             if (ok) setProductModal(null);
+          }}
+        />
+      )}
+
+      {categoryModal && (
+        <ProductCategoryModal
+          initialCategory={categoryModal}
+          onClose={() => setCategoryModal(null)}
+          onSave={async (category) => {
+            const ok = await runAction(() => saveCategory(category), category.id ? '商品类型已更新。' : '商品类型已新增。');
+            if (ok) setCategoryModal(null);
           }}
         />
       )}
@@ -1185,24 +1265,107 @@ function Dashboard({ stats, products, logs, loading }) {
   );
 }
 
-function ProductsView({ products, loading, canMutate, canDelete, onAdd, onEdit, onDelete }) {
+function ProductCategoriesView({ categories, canMutate, onAdd, onEdit, onDelete }) {
   const [query, setQuery] = useState('');
-  const rows = products.filter((product) => matchesQuery(product, query, ['name', 'sku']));
+  const rows = categories.filter((category) => matchesQuery(category, query, ['name', 'remark']));
+
+  return (
+    <Panel
+      title="商品类型"
+      subtitle="维护商品分类，用于商品筛选、商品资料和库存流水查询。"
+      icon={Tags}
+      action={canMutate ? <button className="btn-primary" onClick={onAdd}><Plus size={16} />新增商品类型</button> : null}
+    >
+      <SearchBox value={query} onChange={setQuery} placeholder="按商品类型名称或备注搜索" />
+      <div className="table-scroll mt-4 overflow-x-auto">
+        <table className="data-table min-w-[720px]">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>商品类型名称</th>
+              <th>备注</th>
+              <th>创建时间</th>
+              <th className="text-right">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((category) => (
+              <tr key={category.id}>
+                <td>{category.id}</td>
+                <td className="font-medium">{category.name}</td>
+                <td>{category.remark || '-'}</td>
+                <td>{category.created_at ? new Date(category.created_at).toLocaleString('zh-CN') : '-'}</td>
+                <td>
+                  <RowActions
+                    canEdit={canMutate}
+                    canDelete={canMutate}
+                    onEdit={() => onEdit(category)}
+                    onDelete={() => onDelete(category)}
+                  />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {rows.length === 0 && <EmptyText text="没有找到商品类型。" />}
+    </Panel>
+  );
+}
+
+function ProductsView({ products, categories, loading, canMutate, canDelete, onAdd, onEdit, onDelete }) {
+  const [query, setQuery] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('');
+  const rows = products.filter((product) => {
+    if (!matchesQuery(product, query, ['name', 'sku'])) return false;
+    if (categoryFilter && String(product.category_id || '') !== String(categoryFilter)) return false;
+    return true;
+  });
+
+  async function exportProductsExcel() {
+    const XLSX = await import('xlsx');
+    const data = rows.map((product) => ({
+      商品ID: product.id,
+      SKU: product.sku || '',
+      商品名称: product.name || '',
+      商品类型: product.category_name || '未分类',
+      单位: product.unit || '',
+      当前库存: Number(product.quantity || 0),
+      成本价: Number(product.cost_price || 0),
+      销售价: Number(product.sell_price || 0),
+      预警库存: Number(product.warning_qty || 0),
+      创建时间: product.created_at ? new Date(product.created_at).toLocaleString('zh-CN') : '',
+    }));
+    const worksheet = XLSX.utils.json_to_sheet(data);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, '商品资料');
+    XLSX.writeFile(workbook, `商品资料_${compactTimestamp()}.xlsx`);
+  }
 
   return (
     <Panel
       title="商品管理"
       subtitle="维护商品、SKU、价格、库存和预警值。"
       icon={Boxes}
-      action={canMutate ? <button className="btn-primary" onClick={onAdd}><Plus size={16} />新增商品</button> : null}
+      action={(
+        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+          <select className="input min-w-[160px]" value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}>
+            <option value="">全部类型</option>
+            {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+          </select>
+          <button className="btn-secondary" type="button" onClick={exportProductsExcel}>导出 Excel</button>
+          {canMutate ? <button className="btn-primary" onClick={onAdd}><Plus size={16} />新增商品</button> : null}
+        </div>
+      )}
     >
       <SearchBox value={query} onChange={setQuery} placeholder="按商品名称或 SKU 搜索" />
       <div className="table-scroll mt-4 overflow-x-auto">
-        <table className="data-table min-w-[920px]">
+        <table className="data-table min-w-[1020px]">
           <thead>
             <tr>
               <th>商品名称</th>
               <th>SKU</th>
+              <th>商品类型</th>
               <th>库存</th>
               <th>单位</th>
               <th>成本价</th>
@@ -1218,6 +1381,7 @@ function ProductsView({ products, loading, canMutate, canDelete, onAdd, onEdit, 
                 <tr key={product.id} className={warning ? 'bg-red-50/80 text-red-800' : ''}>
                   <td className="font-medium">{product.name}</td>
                   <td>{product.sku}</td>
+                  <td>{product.category_name || '未分类'}</td>
                   <td className="font-semibold">{formatNumber(product.quantity)}</td>
                   <td>{product.unit}</td>
                   <td>¥{formatMoney(product.cost_price)}</td>
@@ -1635,8 +1799,8 @@ function DeliveryOrdersView({ orders, customers, products, canMutate, canDelete,
   );
 }
 
-function InventoryView({ logs, products, canAdjust, canDelete, onAdjust, onDelete }) {
-  const [filters, setFilters] = useState({ productQuery: '', customer: '', supplier: '', type: '', start: '', end: '' });
+function InventoryView({ logs, products, categories, canAdjust, canDelete, onAdjust, onDelete }) {
+  const [filters, setFilters] = useState({ productQuery: '', customer: '', supplier: '', type: '', categoryId: '', start: '', end: '' });
   const [adjust, setAdjust] = useState({ productId: '', quantity: 0, remark: '' });
   const [exportWithQrCode, setExportWithQrCode] = useState(false);
 
@@ -1647,6 +1811,7 @@ function InventoryView({ logs, products, canAdjust, canDelete, onAdjust, onDelet
     if (filters.customer && !parsed.customer.toLowerCase().includes(filters.customer.trim().toLowerCase())) return false;
     if (filters.supplier && !parsed.supplier.toLowerCase().includes(filters.supplier.trim().toLowerCase())) return false;
     if (filters.type && log.type !== filters.type) return false;
+    if (filters.categoryId && String(log.products?.category_id || '') !== String(filters.categoryId)) return false;
     if (filters.start && log.created_at < `${filters.start}T00:00:00`) return false;
     if (filters.end && log.created_at > `${filters.end}T23:59:59`) return false;
     return true;
@@ -1773,9 +1938,15 @@ function InventoryView({ logs, products, canAdjust, canDelete, onAdjust, onDelet
       )}
 
       <Panel title="库存流水查询" subtitle="支持按商品、类型和日期筛选。" icon={ClipboardList}>
-        <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+        <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-7">
           <Field label="商品名称 / SKU">
             <input className="input" value={filters.productQuery} onChange={(event) => setFilters({ ...filters, productQuery: event.target.value })} placeholder="输入商品或 SKU" />
+          </Field>
+          <Field label="商品类型">
+            <select className="input" value={filters.categoryId} onChange={(event) => setFilters({ ...filters, categoryId: event.target.value })}>
+              <option value="">全部类型</option>
+              {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+            </select>
           </Field>
           <Field label="客户">
             <input className="input" value={filters.customer} onChange={(event) => setFilters({ ...filters, customer: event.target.value })} placeholder="客户名称" />
@@ -1941,7 +2112,42 @@ function UserModal({ initialUser, onClose, onSave }) {
   );
 }
 
-function ProductModal({ initialProduct, onClose, onSave }) {
+function ProductCategoryModal({ initialCategory, onClose, onSave }) {
+  const [category, setCategory] = useState(initialCategory);
+  const [saving, setSaving] = useState(false);
+
+  async function submit(event) {
+    event.preventDefault();
+    setSaving(true);
+    await onSave(category);
+    setSaving(false);
+  }
+
+  return (
+    <Modal title={category.id ? '编辑商品类型' : '新增商品类型'} onClose={onClose}>
+      <form className="space-y-4" onSubmit={submit}>
+        <Field label="商品类型名称">
+          <input
+            className="input"
+            value={category.name}
+            onChange={(event) => setCategory({ ...category, name: event.target.value })}
+            required
+          />
+        </Field>
+        <Field label="备注">
+          <textarea
+            className="input min-h-24"
+            value={category.remark || ''}
+            onChange={(event) => setCategory({ ...category, remark: event.target.value })}
+          />
+        </Field>
+        <ModalActions onCancel={onClose} saving={saving} />
+      </form>
+    </Modal>
+  );
+}
+
+function ProductModal({ initialProduct, categories, onClose, onSave }) {
   const [product, setProduct] = useState(initialProduct);
   const [saving, setSaving] = useState(false);
 
@@ -1957,6 +2163,26 @@ function ProductModal({ initialProduct, onClose, onSave }) {
       <form className="space-y-4" onSubmit={submit}>
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="商品名称"><input className="input" value={product.name} onChange={(e) => setProduct({ ...product, name: e.target.value })} required /></Field>
+          <Field label="商品类型">
+            <select
+              className="input"
+              value={product.category_id || ''}
+              onChange={(e) => {
+                const category = categories.find((item) => String(item.id) === String(e.target.value));
+                setProduct({
+                  ...product,
+                  category_id: e.target.value,
+                  category_name: category?.name || '',
+                });
+              }}
+              required
+            >
+              <option value="">请选择商品类型</option>
+              {categories.map((category) => (
+                <option key={category.id} value={category.id}>{category.name}</option>
+              ))}
+            </select>
+          </Field>
           <Field label="SKU">
             <input
               className="input bg-slate-50 text-slate-500"
