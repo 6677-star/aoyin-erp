@@ -824,6 +824,12 @@ function ErpApp({ currentUser, onLogout }) {
     if (error) throw error;
   }
 
+  async function getNextDeliveryOrderNo() {
+    const { data, error } = await supabase.rpc('next_delivery_order_no');
+    if (error) throw error;
+    return data;
+  }
+
   async function deleteStockLog(log) {
     if (!can(currentUser, 'deleteStockLogs')) {
       setToast({ type: 'error', text: '权限不足，只有管理员才能删除库存流水' });
@@ -839,64 +845,6 @@ function ErpApp({ currentUser, onLogout }) {
     }, '库存流水已删除，操作已记录。');
   }
 
-  async function applyDeliveryStock(order, items, mode = 'apply') {
-    const orderType = order.order_type || 'sale_out';
-    for (const item of items) {
-      const productId = item.product_id;
-      const quantity = Math.abs(Number(item.quantity || 0));
-      if (!productId || quantity <= 0) continue;
-
-      const { data: product, error: productError } = await supabase
-        .from('products')
-        .select('*')
-        .eq('id', productId)
-        .single();
-      if (productError) throw productError;
-
-      const baseDelta = orderType === 'sale_return' ? quantity : -quantity;
-      const delta = mode === 'reverse' ? -baseDelta : baseDelta;
-      const beforeQty = Number(product.quantity || 0);
-      const afterQty = beforeQty + delta;
-      if (afterQty < 0) throw new Error(`商品「${product.name}」库存不足`);
-
-      const { error: updateError } = await supabase
-        .from('products')
-        .update({ quantity: afterQty })
-        .eq('id', productId);
-      if (updateError) throw updateError;
-
-      const unitPrice = Number(item.price || 0);
-      const amount = Number((quantity * unitPrice).toFixed(2));
-      const logType = mode === 'reverse' ? 'system_delete' : orderType;
-      const remarkParts = [
-        `单号：${order.order_no}`,
-        `客户：${order.customer_name || ''}`,
-        `单价：${unitPrice}`,
-        item.remark || order.remark || '',
-      ].filter(Boolean);
-
-      const { error: logError } = await supabase.from('stock_logs').insert({
-        product_id: productId,
-        product_sku: product.sku || item.product_sku || '',
-        product_name: product.name || item.product_name || '',
-        category_id: product.category_id || null,
-        category_name: product.category_name || item.category_name || null,
-        customer_name: order.customer_name || null,
-        type: logType,
-        quantity,
-        before_qty: beforeQty,
-        after_qty: afterQty,
-        unit_price: unitPrice,
-        amount,
-        order_id: order.id || null,
-        order_no: order.order_no || null,
-        operator: order.operator || operator,
-        remark: remarkParts.join('；'),
-      });
-      if (logError) throw logError;
-    }
-  }
-
   async function saveDeliveryOrder(order) {
     if (!order.customer_id) throw new Error('请选择客户。');
     if (!order.items.length) throw new Error('请至少添加一条商品明细。');
@@ -907,12 +855,13 @@ function ErpApp({ currentUser, onLogout }) {
       const product = products.find((row) => String(row.id) === String(item.product_id));
       const quantity = Number(item.quantity || 0);
       const price = Number(item.price || 0);
+      if (!product) throw new Error('商品不存在，请重新选择。');
+      if (quantity <= 0) throw new Error('商品数量必须大于 0。');
       return {
         product_id: item.product_id,
-        product_sku: product?.sku || item.product_sku || '',
-        product_name: product?.name || item.product_name || '',
-        spec: item.spec || '',
-        unit: product?.unit || item.unit || '',
+        product_name: product.name || item.product_name || '',
+        sku: product.sku || item.product_sku || '',
+        unit: product.unit || item.unit || '',
         quantity,
         price,
         amount: quantity * price,
@@ -920,74 +869,41 @@ function ErpApp({ currentUser, onLogout }) {
       };
     });
 
-    const payload = {
-      order_no: order.order_no,
-      customer_id: order.customer_id,
-      customer_name: customer?.name || order.customer_name,
-      order_type: order.order_type || 'sale_out',
-      status: order.status || 'saved',
-      delivery_date: order.delivery_date,
-      operator: order.operator || operator,
-      remark: order.remark || null,
-    };
-
-    if (order.id) {
-      const { data: existingOrder, error: existingError } = await supabase
-        .from('delivery_orders')
-        .select('*, delivery_order_items(*)')
-        .eq('id', order.id)
-        .single();
-      if (existingError) throw existingError;
-      await applyDeliveryStock(existingOrder, existingOrder.delivery_order_items || [], 'reverse');
-
-      const { error: updateError } = await supabase.from('delivery_orders').update(payload).eq('id', order.id);
-      if (updateError) throw updateError;
-      const { error: deleteError } = await supabase.from('delivery_order_items').delete().eq('delivery_order_id', order.id);
-      if (deleteError) throw deleteError;
-      const { error: insertError } = await supabase
-        .from('delivery_order_items')
-        .insert(cleanItems.map((item) => ({ ...item, delivery_order_id: order.id })));
-      if (insertError) throw insertError;
-      await applyDeliveryStock({ ...payload, id: order.id }, cleanItems, 'apply');
-      return;
-    }
-
-    const { data, error: insertOrderError } = await supabase
-      .from('delivery_orders')
-      .insert(payload)
-      .select('id')
-      .single();
-    if (insertOrderError) throw insertOrderError;
-
-    const savedOrder = { ...payload, id: data.id };
-    const { error: insertItemsError } = await supabase
-      .from('delivery_order_items')
-      .insert(cleanItems.map((item) => ({ ...item, delivery_order_id: data.id })));
-    if (insertItemsError) throw insertItemsError;
-    await applyDeliveryStock(savedOrder, cleanItems, 'apply');
+    const { error } = await supabase.rpc('create_delivery_order_transaction', {
+      p_order_type: order.order_type || 'sale_out',
+      p_customer_id: order.customer_id,
+      p_customer_name: customer?.name || order.customer_name || '',
+      p_order_no: order.id ? order.order_no : null,
+      p_delivery_date: order.delivery_date,
+      p_operator: order.operator || operator,
+      p_remark: order.remark || null,
+      p_items: cleanItems,
+      p_order_id: order.id || null,
+    });
+    if (error) throw error;
   }
 
   async function deleteDeliveryOrder(order) {
     if (!window.confirm(`确认删除单据「${order.order_no}」吗？删除后会自动恢复库存并记录系统删除流水。`)) return;
     await runAction(async () => {
-      const fullOrder = order.delivery_order_items
-        ? order
-        : (await supabase.from('delivery_orders').select('*, delivery_order_items(*)').eq('id', order.id).single()).data;
-      if (!fullOrder) throw new Error('单据不存在');
-      await applyDeliveryStock(fullOrder, fullOrder.delivery_order_items || [], 'reverse');
-      const { error } = await supabase.from('delivery_orders').delete().eq('id', order.id);
+      const { error } = await supabase.rpc('delete_delivery_order_transaction', {
+        p_order_id: order.id,
+        p_operator: operator,
+      });
       if (error) throw error;
     }, '单据已删除，库存已恢复。');
   }
 
   async function createDeliveryDraft(orderType = 'sale_out') {
-    const { data, error } = await supabase.rpc('next_delivery_order_no');
-    if (error) {
+    let orderNo = '';
+    try {
+      orderNo = await getNextDeliveryOrderNo();
+    } catch (error) {
       setToast({ type: 'error', text: error.message });
       return;
     }
     setDeliveryModal({
-      order_no: data,
+      order_no: orderNo,
       customer_id: '',
       customer_name: '',
       delivery_date: todayDate(),
@@ -2442,9 +2358,13 @@ function DeliveryOrderModal({ initialOrder, customers, products, onClose, onSave
 
   async function submit(event) {
     event.preventDefault();
+    if (saving) return;
     setSaving(true);
-    await onSave(order);
-    setSaving(false);
+    try {
+      await onSave(order);
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -3043,7 +2963,7 @@ function Modal({ title, children, onClose, wide = false }) {
 function ModalActions({ onCancel, saving }) {
   return (
     <div className="flex justify-end gap-2">
-      <button className="btn-secondary" type="button" onClick={onCancel}>取消</button>
+      <button className="btn-secondary" type="button" onClick={onCancel} disabled={saving}>取消</button>
       <button className="btn-primary" type="submit" disabled={saving}>{saving ? '保存中...' : '保存'}</button>
     </div>
   );
