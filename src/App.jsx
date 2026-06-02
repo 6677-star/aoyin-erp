@@ -144,12 +144,6 @@ function todayIsoStart() {
   return now.toISOString();
 }
 
-function amountToChinese(value) {
-  const amount = Number(value || 0);
-  if (!amount) return '零元整';
-  return `${formatMoney(amount)} 元整`;
-}
-
 function calculateLineAmount(item) {
   return Number(item?.quantity || 0) * Number(item?.price || 0);
 }
@@ -237,6 +231,35 @@ function getPrintClass(settings) {
 
 function getPdfOrientation(settings) {
   return normalizePrintSettings(settings).orientation === 'landscape' ? 'l' : 'p';
+}
+
+function getPdfFormat(settings) {
+  return normalizePrintSettings(settings).paperType === 'triple' ? [241, 279] : 'a4';
+}
+
+function getPrintCopyCount(settings) {
+  const paperType = normalizePrintSettings(settings).paperType;
+  if (paperType === 'two-part') return 2;
+  if (paperType === 'triple') return 3;
+  return 1;
+}
+
+function syncPrintCopies(printRef, settings) {
+  const root = printRef.current;
+  if (!root) return;
+  root.querySelectorAll('.delivery-copy-clone, .delivery-copy-separator').forEach((node) => node.remove());
+  const source = root.querySelector('.delivery-copy-source');
+  if (!source) return;
+  const copyCount = getPrintCopyCount(settings);
+  for (let index = 1; index < copyCount; index += 1) {
+    const separator = document.createElement('div');
+    separator.className = 'delivery-copy-separator';
+    root.appendChild(separator);
+    const clone = source.cloneNode(true);
+    clone.classList.remove('delivery-copy-source');
+    clone.classList.add('delivery-copy-clone');
+    root.appendChild(clone);
+  }
 }
 
 function logSupabaseDeleteError(error, productId, context) {
@@ -2068,6 +2091,7 @@ function DeliveryPrintModal({ order, companyProfile, onClose }) {
 
   useEffect(() => {
     savePrintSettings(printSettings);
+    syncPrintCopies(printRef, printSettings);
   }, [printSettings]);
 
   async function exportPdf() {
@@ -2077,7 +2101,7 @@ function DeliveryPrintModal({ order, companyProfile, onClose }) {
     ]);
     const canvas = await html2canvas(printRef.current, { scale: 2, backgroundColor: '#ffffff' });
     const image = canvas.toDataURL('image/png');
-    const pdf = new jsPDF(getPdfOrientation(printSettings), 'mm', 'a4');
+    const pdf = new jsPDF(getPdfOrientation(printSettings), 'mm', getPdfFormat(printSettings));
     const width = pdf.internal.pageSize.getWidth();
     const height = (canvas.height * width) / canvas.width;
     pdf.addImage(image, 'PNG', 0, 0, width, height);
@@ -2089,6 +2113,7 @@ function DeliveryPrintModal({ order, companyProfile, onClose }) {
       <div className="mx-auto max-w-6xl rounded-lg bg-white p-4 shadow-xl print:max-w-none print:rounded-none print:p-0 print:shadow-none">
         <PrintSettingsPanel printSettings={printSettings} setPrintSettings={setPrintSettings} exportPdf={exportPdf} onClose={onClose} />
         <article ref={printRef} className={getPrintClass(printSettings)}>
+          <section className="delivery-copy delivery-copy-source">
           <header className="delivery-header">
             <div className="logo-box">
               {printSettings.showLogo && (
@@ -2169,8 +2194,7 @@ function DeliveryPrintModal({ order, companyProfile, onClose }) {
                 );
               })}
               <tr>
-                <td colSpan={printSettings.showAmountGrid ? 12 : 5} className="text-left">金额合计(大写)：{amountToChinese(total)}</td>
-                <td colSpan={printSettings.showAmountGrid ? 3 : 3} className="text-left">小写金额 ￥{formatMoney(total)}</td>
+                <td colSpan={printSettings.showAmountGrid ? 15 : 8} className="text-left">金额合计：￥{formatMoney(total)}</td>
               </tr>
             </tbody>
           </table>
@@ -2180,6 +2204,7 @@ function DeliveryPrintModal({ order, companyProfile, onClose }) {
             <div>送货单位及经手人（盖章）：</div>
             <div>收货单位及经手人（盖章）：</div>
           </footer>
+          </section>
         </article>
       </div>
     </div>
@@ -2217,6 +2242,7 @@ function StockDocumentPrintModal({ title, type, logs, companyProfile, onClose })
 
   useEffect(() => {
     savePrintSettings(printSettings);
+    syncPrintCopies(printRef, printSettings);
   }, [printSettings]);
 
   async function exportPdf() {
@@ -2226,7 +2252,7 @@ function StockDocumentPrintModal({ title, type, logs, companyProfile, onClose })
     ]);
     const canvas = await html2canvas(printRef.current, { scale: 2, backgroundColor: '#ffffff' });
     const image = canvas.toDataURL('image/png');
-    const pdf = new jsPDF(getPdfOrientation(printSettings), 'mm', 'a4');
+    const pdf = new jsPDF(getPdfOrientation(printSettings), 'mm', getPdfFormat(printSettings));
     const width = pdf.internal.pageSize.getWidth();
     const height = (canvas.height * width) / canvas.width;
     pdf.addImage(image, 'PNG', 0, 0, width, height);
@@ -2239,6 +2265,7 @@ function StockDocumentPrintModal({ title, type, logs, companyProfile, onClose })
         <PrintSettingsPanel printSettings={printSettings} setPrintSettings={setPrintSettings} exportPdf={exportPdf} onClose={onClose} />
 
         <article ref={printRef} className={getPrintClass(printSettings)}>
+          <section className="delivery-copy delivery-copy-source">
           <header className="delivery-header">
             <div className="logo-box">
               {printSettings.showLogo && (
@@ -2313,11 +2340,11 @@ function StockDocumentPrintModal({ title, type, logs, companyProfile, onClose })
                 );
               })}
               <tr>
-                <td colSpan={printSettings.showAmountGrid ? 10 : 4} className="text-left">金额合计(大写)：{amountToChinese(total)}</td>
-                <td colSpan={printSettings.showAmountGrid ? 4 : 3} className="text-left">小写金额 ￥{formatMoney(total)}</td>
+                <td colSpan={printSettings.showAmountGrid ? 14 : 7} className="text-left">金额合计：￥{formatMoney(total)}</td>
               </tr>
             </tbody>
           </table>
+          </section>
         </article>
       </div>
     </div>

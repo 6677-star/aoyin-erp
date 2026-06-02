@@ -35,6 +35,11 @@ button {
     margin: 8mm;
   }
 
+  @page triple-page {
+    size: 241mm 279mm;
+    margin: 6mm;
+  }
+
   body {
     background: #fff;
   }
@@ -97,6 +102,15 @@ button {
   font-family: "SimSun", "Songti SC", serif;
 }
 
+.delivery-copy {
+  position: relative;
+}
+
+.delivery-copy-separator {
+  margin: 8px 0;
+  border-top: 1px dashed #555;
+}
+
 .delivery-print.print-portrait {
   width: 780px;
   padding: 18px 20px 42px;
@@ -112,7 +126,7 @@ button {
 }
 
 .delivery-print.print-portrait .delivery-title h1 {
-  font-size: 22px;
+  font-size: 15px;
 }
 
 .delivery-print.print-portrait .delivery-title h2 {
@@ -213,9 +227,12 @@ button {
 
 .delivery-title h1 {
   margin: 0;
-  font-size: 26px;
+  font-size: 16px;
   font-weight: 700;
   letter-spacing: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .delivery-title p {
@@ -297,64 +314,135 @@ button {
 }
 
 .paper-two-part {
-  padding: 14px 24px 34px;
-  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  width: 780px;
+  padding: 8px 18px;
+  font-size: 12px;
 }
 
 .paper-two-part.print-portrait {
-  padding: 12px 18px 30px;
+  padding: 8px 16px;
+}
+
+.paper-two-part .delivery-copy {
+  box-sizing: border-box;
+  height: 134mm;
+  overflow: hidden;
+  padding-bottom: 3mm;
+}
+
+.paper-two-part.print-landscape .delivery-copy {
+  height: 96mm;
+}
+
+.paper-two-part .delivery-copy-separator {
+  margin: 2mm 0;
+  border-top: 1px dashed #777;
 }
 
 .paper-two-part .delivery-title h1 {
-  font-size: 23px;
+  font-size: 15px;
 }
 
 .paper-two-part .delivery-title h2 {
-  font-size: 30px;
+  font-size: 24px;
+  letter-spacing: 5px;
+}
+
+.paper-two-part .delivery-title p {
+  margin: 2px 0 4px;
+  font-size: 11px;
+}
+
+.paper-two-part .delivery-meta {
+  margin-top: 34px;
+  font-size: 11px;
+}
+
+.paper-two-part .delivery-logo-placeholder {
+  height: 38px;
 }
 
 .paper-two-part .delivery-table {
-  font-size: 13px;
+  font-size: 11px;
 }
 
 .paper-two-part .delivery-table th,
 .paper-two-part .delivery-table td {
-  height: 25px;
-  padding: 2px 4px;
+  height: 18px;
+  padding: 1px 3px;
+}
+
+.paper-two-part .mt-2 {
+  margin-top: 2px;
+}
+
+.paper-two-part .mt-5 {
+  margin-top: 8px;
 }
 
 .paper-triple {
-  padding: 12px 20px 28px;
+  display: flex;
+  flex-direction: column;
+  width: 920px;
+  padding: 6px 14px;
   font-family: "SimSun", "宋体", serif;
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .paper-triple.print-portrait {
-  padding: 10px 16px 24px;
+  padding: 6px 12px;
+}
+
+.paper-triple .delivery-copy {
+  box-sizing: border-box;
+  height: 87mm;
+  overflow: hidden;
+  padding-bottom: 2mm;
+}
+
+.paper-triple .delivery-copy-separator {
+  margin: 1.5mm 0;
+  border-top: 1px dashed #000;
 }
 
 .paper-triple .delivery-title h1 {
-  font-size: 22px;
+  font-size: 14px;
 }
 
 .paper-triple .delivery-title h2 {
-  font-size: 28px;
+  font-size: 22px;
+  letter-spacing: 5px;
+}
+
+.paper-triple .delivery-title p {
+  margin: 1px 0 3px;
+  font-size: 10px;
 }
 
 .paper-triple .delivery-meta {
-  margin-top: 72px;
-  font-size: 12px;
+  margin-top: 28px;
+  font-size: 10px;
 }
 
 .paper-triple .delivery-table {
-  font-size: 12px;
+  font-size: 10px;
 }
 
 .paper-triple .delivery-table th,
 .paper-triple .delivery-table td {
-  height: 22px;
+  height: 16px;
   border-color: #000;
-  padding: 1px 3px;
+  padding: 0 2px;
+}
+
+.paper-triple .mt-2 {
+  margin-top: 2px;
+}
+
+.paper-triple .mt-5 {
+  margin-top: 6px;
 }
 
 @media print {
@@ -373,6 +461,11 @@ button {
     margin: 8mm;
   }
 
+  @page triple-page {
+    size: 241mm 279mm;
+    margin: 6mm;
+  }
+
   .delivery-print {
     width: 100%;
     max-width: none;
@@ -386,6 +479,7 @@ button {
 
   .delivery-print.paper-triple {
     font-size: 12px;
+    page: triple-page;
   }
 
   .delivery-print.print-landscape {
