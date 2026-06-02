@@ -2095,16 +2095,24 @@ function DeliveryPrintModal({ order, companyProfile, onClose }) {
   }, [printSettings]);
 
   async function exportPdf() {
+    syncPrintCopies(printRef, printSettings);
     const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
       import('html2canvas'),
       import('jspdf'),
     ]);
+    await new Promise((resolve) => window.requestAnimationFrame(resolve));
     const canvas = await html2canvas(printRef.current, { scale: 2, backgroundColor: '#ffffff' });
     const image = canvas.toDataURL('image/png');
     const pdf = new jsPDF(getPdfOrientation(printSettings), 'mm', getPdfFormat(printSettings));
-    const width = pdf.internal.pageSize.getWidth();
-    const height = (canvas.height * width) / canvas.width;
-    pdf.addImage(image, 'PNG', 0, 0, width, height);
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    let imageWidth = pageWidth;
+    let imageHeight = (canvas.height * imageWidth) / canvas.width;
+    if (imageHeight > pageHeight) {
+      imageHeight = pageHeight;
+      imageWidth = (canvas.width * imageHeight) / canvas.height;
+    }
+    pdf.addImage(image, 'PNG', (pageWidth - imageWidth) / 2, 0, imageWidth, imageHeight);
     pdf.save(`${SYSTEM_NAME}-送货单-${order.order_no}.pdf`);
   }
 
@@ -2246,16 +2254,24 @@ function StockDocumentPrintModal({ title, type, logs, companyProfile, onClose })
   }, [printSettings]);
 
   async function exportPdf() {
+    syncPrintCopies(printRef, printSettings);
     const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
       import('html2canvas'),
       import('jspdf'),
     ]);
+    await new Promise((resolve) => window.requestAnimationFrame(resolve));
     const canvas = await html2canvas(printRef.current, { scale: 2, backgroundColor: '#ffffff' });
     const image = canvas.toDataURL('image/png');
     const pdf = new jsPDF(getPdfOrientation(printSettings), 'mm', getPdfFormat(printSettings));
-    const width = pdf.internal.pageSize.getWidth();
-    const height = (canvas.height * width) / canvas.width;
-    pdf.addImage(image, 'PNG', 0, 0, width, height);
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    let imageWidth = pageWidth;
+    let imageHeight = (canvas.height * imageWidth) / canvas.width;
+    if (imageHeight > pageHeight) {
+      imageHeight = pageHeight;
+      imageWidth = (canvas.width * imageHeight) / canvas.height;
+    }
+    pdf.addImage(image, 'PNG', (pageWidth - imageWidth) / 2, 0, imageWidth, imageHeight);
     pdf.save(`${SYSTEM_NAME}-${title}-${compactTimestamp()}.pdf`);
   }
 

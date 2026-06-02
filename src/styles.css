@@ -21,7 +21,7 @@ button {
 
 @media print {
   @page {
-    size: A4 portrait;
+    size: A4;
     margin: 8mm;
   }
 
@@ -104,11 +104,21 @@ button {
 
 .delivery-copy {
   position: relative;
+  break-after: auto;
+  break-before: auto;
+  break-inside: avoid;
+  page-break-after: auto;
+  page-break-before: auto;
+  page-break-inside: avoid;
 }
 
 .delivery-copy-separator {
   margin: 8px 0;
   border-top: 1px dashed #555;
+  break-after: auto;
+  break-before: auto;
+  page-break-after: auto;
+  page-break-before: auto;
 }
 
 .delivery-print.print-portrait {
@@ -447,7 +457,7 @@ button {
 
 @media print {
   @page {
-    size: A4 portrait;
+    size: A4;
     margin: 8mm;
   }
 
@@ -466,30 +476,85 @@ button {
     margin: 6mm;
   }
 
+  html,
+  body,
+  #root {
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #fff !important;
+  }
+
+  .print\:hidden,
+  header.print\:hidden,
+  nav.print\:hidden,
+  section.print\:hidden,
+  .fixed.print\:hidden {
+    display: none !important;
+  }
+
   .delivery-print {
     width: 100%;
     max-width: none;
+    max-height: calc(297mm - 16mm);
     border: 0;
     padding: 0;
+    margin: 0 auto;
+    overflow: hidden;
+    break-after: auto;
+    break-before: auto;
+    break-inside: avoid;
+    page-break-after: auto;
+    page-break-before: auto;
+    page-break-inside: avoid;
   }
 
   .delivery-print.paper-two-part {
     font-size: 13px;
+    max-height: calc(297mm - 16mm);
+    overflow: hidden;
   }
 
   .delivery-print.paper-triple {
     font-size: 12px;
     page: triple-page;
+    max-height: calc(279mm - 12mm);
+    overflow: hidden;
   }
 
   .delivery-print.print-landscape {
     width: 100%;
+    max-height: calc(210mm - 16mm);
     page: landscape-page;
   }
 
   .delivery-print.print-portrait {
     width: 100%;
+    max-height: calc(297mm - 16mm);
     page: portrait-page;
+  }
+
+  .delivery-print.paper-two-part.print-portrait,
+  .delivery-print.paper-two-part.print-landscape {
+    page: portrait-page;
+    max-height: calc(297mm - 16mm);
+  }
+
+  .delivery-print.paper-triple.print-portrait,
+  .delivery-print.paper-triple.print-landscape {
+    page: triple-page;
+    max-height: calc(279mm - 12mm);
+  }
+
+  .delivery-copy:last-child,
+  .delivery-copy-clone:last-child,
+  .delivery-print > :last-child {
+    margin-bottom: 0 !important;
+    break-after: auto !important;
+    page-break-after: auto !important;
+  }
+
+  .delivery-copy-separator:last-child {
+    display: none !important;
   }
 
   .delivery-table th,
