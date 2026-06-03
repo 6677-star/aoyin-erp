@@ -18,7 +18,7 @@ export default [
     },
   },
   {
-    files: ['electron/**/*.cjs'],
+    files: ['electron/**/*.cjs', 'main.cjs'],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'commonjs',
@@ -27,6 +27,7 @@ export default [
         process: 'readonly',
         require: 'readonly',
         module: 'readonly',
+        setTimeout: 'readonly',
       },
     },
   },
@@ -40,6 +41,7 @@ export default [
         document: 'readonly',
         console: 'readonly',
         localStorage: 'readonly',
+        sessionStorage: 'readonly',
         __APP_VERSION__: 'readonly',
         __BUILD_TIME__: 'readonly',
         process: 'readonly',

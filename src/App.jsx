@@ -363,16 +363,58 @@ export default function App() {
   const [loadingSession, setLoadingSession] = useState(true);
 
   useEffect(() => {
-    const stored = localStorage.getItem('currentUser');
-    if (stored) {
-      try {
-        const user = JSON.parse(stored);
-        if (user?.status === 'active') setCurrentUser(user);
-      } catch {
-        localStorage.removeItem('currentUser');
+    let cancelled = false;
+
+    async function restoreSession() {
+      const autoLogin = localStorage.getItem('autoLogin') === 'true';
+      const sessionUser = sessionStorage.getItem('currentUser');
+      const storedUser = autoLogin ? null : sessionUser;
+
+      if (storedUser) {
+        try {
+          const user = JSON.parse(storedUser);
+          if (user?.status === 'active' && !cancelled) {
+            setCurrentUser(user);
+            setLoadingSession(false);
+            return;
+          }
+        } catch {
+          localStorage.removeItem('currentUser');
+          sessionStorage.removeItem('currentUser');
+        }
       }
+
+      if (autoLogin) {
+        const savedUsername = localStorage.getItem('savedUsername') || '';
+        const savedPassword = localStorage.getItem('savedPassword') || '';
+        if (savedUsername && savedPassword) {
+          const { data } = await supabase
+            .from('app_users')
+            .select('id, username, password, real_name, role, status')
+            .eq('username', savedUsername)
+            .eq('password', savedPassword)
+            .maybeSingle();
+
+          if (data?.status === 'active' && !cancelled) {
+            const safeUser = sanitizeUser(data);
+            localStorage.setItem('currentUser', JSON.stringify(safeUser));
+            setCurrentUser(safeUser);
+            setLoadingSession(false);
+            return;
+          }
+
+          localStorage.removeItem('currentUser');
+          localStorage.setItem('autoLogin', 'false');
+        }
+      }
+
+      if (!cancelled) setLoadingSession(false);
     }
-    setLoadingSession(false);
+
+    restoreSession();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   if (loadingSession) return <FullScreenMessage text="正在载入系统..." />;
@@ -381,14 +423,22 @@ export default function App() {
       currentUser={currentUser}
       onLogout={() => {
         localStorage.removeItem('currentUser');
+        sessionStorage.removeItem('currentUser');
+        localStorage.setItem('autoLogin', 'false');
         setCurrentUser(null);
       }}
     />
   ) : (
     <LoginPage
-      onLogin={(user) => {
+      onLogin={(user, options) => {
         const safeUser = sanitizeUser(user);
-        localStorage.setItem('currentUser', JSON.stringify(safeUser));
+        if (options?.autoLogin) {
+          localStorage.setItem('currentUser', JSON.stringify(safeUser));
+          sessionStorage.removeItem('currentUser');
+        } else {
+          sessionStorage.setItem('currentUser', JSON.stringify(safeUser));
+          localStorage.removeItem('currentUser');
+        }
         setCurrentUser(safeUser);
       }}
     />
@@ -408,8 +458,23 @@ function FullScreenMessage({ text }) {
 function LoginPage({ onLogin }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [rememberPassword, setRememberPassword] = useState(false);
+  const [autoLogin, setAutoLogin] = useState(false);
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const savedRemember = localStorage.getItem('rememberPassword') === 'true';
+    const savedAutoLogin = localStorage.getItem('autoLogin') === 'true';
+    const savedUsername = localStorage.getItem('savedUsername') || '';
+    const savedPassword = localStorage.getItem('savedPassword') || '';
+    setRememberPassword(savedRemember);
+    setAutoLogin(savedAutoLogin);
+    if (savedRemember || savedAutoLogin) {
+      setUsername(savedUsername);
+      setPassword(savedPassword);
+    }
+  }, []);
 
   async function handleLogin(event) {
     event.preventDefault();
@@ -429,7 +494,18 @@ function LoginPage({ onLogin }) {
       return;
     }
 
-    onLogin(data);
+    const shouldSavePassword = rememberPassword || autoLogin;
+    localStorage.setItem('rememberPassword', rememberPassword ? 'true' : 'false');
+    localStorage.setItem('autoLogin', autoLogin ? 'true' : 'false');
+    if (shouldSavePassword) {
+      localStorage.setItem('savedUsername', username.trim());
+      localStorage.setItem('savedPassword', password);
+    } else {
+      localStorage.removeItem('savedUsername');
+      localStorage.removeItem('savedPassword');
+    }
+
+    onLogin(data, { autoLogin });
     setLoading(false);
   }
 
@@ -465,6 +541,29 @@ function LoginPage({ onLogin }) {
               autoComplete="current-password"
             />
           </Field>
+          <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-slate-600">
+            <label className="inline-flex items-center gap-2">
+              <input
+                type="checkbox"
+                className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-900"
+                checked={rememberPassword}
+                onChange={(event) => setRememberPassword(event.target.checked)}
+              />
+              <span>记住密码</span>
+            </label>
+            <label className="inline-flex items-center gap-2">
+              <input
+                type="checkbox"
+                className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-900"
+                checked={autoLogin}
+                onChange={(event) => {
+                  setAutoLogin(event.target.checked);
+                  if (event.target.checked) setRememberPassword(true);
+                }}
+              />
+              <span>自动登录</span>
+            </label>
+          </div>
           {message && <AlertMessage type="error" text={message} />}
           <button className="btn-primary w-full" type="submit" disabled={loading}>
             {loading ? '登录中...' : '登录'}
@@ -956,6 +1055,7 @@ function ErpApp({ currentUser, onLogout }) {
     { id: 'inventory', label: '库存流水', icon: ClipboardList },
   ];
 
+  const navOrder = ['dashboard', 'purchase', 'sales', 'inventory', 'products', 'categories', 'customers', 'suppliers', 'company', 'users'];
   const stats = useMemo(() => buildStats(products, logs), [products, logs]);
   const activeCompanyProfile = companyProfiles.find((profile) => profile.is_active) || null;
 
@@ -986,8 +1086,8 @@ function ErpApp({ currentUser, onLogout }) {
         </div>
       )}
 
-      <main className="mx-auto grid max-w-7xl gap-4 px-4 py-4 lg:grid-cols-[220px_1fr] print:block print:max-w-none print:p-0">
-        <nav className="flex gap-2 overflow-x-auto rounded-lg border border-slate-200 bg-white p-2 lg:block lg:space-y-2 print:hidden">
+      <main className="mx-auto grid max-w-7xl gap-4 px-4 py-4 lg:h-[calc(100vh-96px)] lg:grid-cols-[220px_1fr] lg:overflow-hidden print:block print:max-w-none print:p-0">
+        <nav className="flex gap-2 overflow-x-auto rounded-lg border border-slate-200 bg-white p-2 lg:sticky lg:top-4 lg:block lg:h-full lg:space-y-2 lg:overflow-y-auto print:hidden">
           <div className="hidden items-center gap-2 border-b border-slate-100 px-2 pb-3 mb-2 lg:flex">
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-white">
               <Boxes size={18} />
@@ -998,7 +1098,10 @@ function ErpApp({ currentUser, onLogout }) {
               <p className="truncate text-[11px] text-slate-400">v{APP_VERSION} · {BUILD_TIME}</p>
             </div>
           </div>
-          {navItems.filter((item) => canAccess(currentUser, item.id)).map((item) => {
+          {navItems
+            .filter((item) => canAccess(currentUser, item.id))
+            .sort((a, b) => navOrder.indexOf(a.id) - navOrder.indexOf(b.id))
+            .map((item) => {
             const Icon = item.icon;
             return (
               <button
@@ -1013,7 +1116,7 @@ function ErpApp({ currentUser, onLogout }) {
           })}
         </nav>
 
-        <section className="min-w-0 print:hidden">
+        <section className="min-w-0 lg:h-full lg:overflow-y-auto lg:pr-1 print:hidden">
           {!canAccess(currentUser, activeTab) && <NoPermission />}
           {activeTab === 'dashboard' && <Dashboard stats={stats} products={products} logs={logs} loading={loading} />}
           {activeTab === 'categories' && (
