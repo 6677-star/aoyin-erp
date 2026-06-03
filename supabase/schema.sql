@@ -75,6 +75,9 @@ alter table public.stock_logs add column if not exists unit_price numeric(12, 2)
 alter table public.stock_logs add column if not exists amount numeric(12, 2) default 0;
 alter table public.stock_logs add column if not exists order_id uuid;
 alter table public.stock_logs add column if not exists order_no text;
+alter table public.stock_logs add column if not exists is_deleted boolean not null default false;
+alter table public.stock_logs add column if not exists deleted_at timestamptz;
+alter table public.stock_logs add column if not exists deleted_by text;
 
 create table if not exists public.stock_log_delete_audit (
   id bigint generated always as identity primary key,
@@ -142,6 +145,10 @@ create table if not exists public.delivery_orders (
 
 alter table public.delivery_orders add column if not exists order_type text not null default 'sale_out';
 alter table public.delivery_orders add column if not exists status text not null default 'saved';
+alter table public.delivery_orders add column if not exists is_deleted boolean not null default false;
+alter table public.delivery_orders add column if not exists deleted_at timestamptz;
+alter table public.delivery_orders add column if not exists deleted_by text;
+alter table public.delivery_orders add column if not exists updated_at timestamptz;
 
 alter table public.delivery_orders
 drop constraint if exists delivery_orders_order_type_check;
@@ -171,6 +178,10 @@ create table if not exists public.delivery_order_items (
   remark text
 );
 
+alter table public.delivery_order_items add column if not exists category_name text;
+alter table public.delivery_order_items add column if not exists is_deleted boolean not null default false;
+alter table public.delivery_order_items add column if not exists deleted_at timestamptz;
+
 create index if not exists idx_products_name on public.products using gin (to_tsvector('simple', name));
 create index if not exists idx_products_sku on public.products (sku);
 create unique index if not exists idx_products_sku_unique on public.products (sku);
@@ -189,6 +200,7 @@ create index if not exists idx_stock_log_delete_audit_stock_log_id on public.sto
 create index if not exists idx_delivery_orders_order_no on public.delivery_orders (order_no);
 create index if not exists idx_delivery_orders_customer_id on public.delivery_orders (customer_id);
 create index if not exists idx_delivery_orders_order_type on public.delivery_orders (order_type);
+create index if not exists idx_delivery_orders_is_deleted on public.delivery_orders (is_deleted);
 create index if not exists idx_delivery_order_items_order_id on public.delivery_order_items (delivery_order_id);
 create index if not exists idx_delivery_order_items_product_id on public.delivery_order_items (product_id);
 
@@ -453,7 +465,7 @@ begin
     end if;
 
     for v_existing_item in
-      select * from public.delivery_order_items where delivery_order_id = p_order_id
+      select * from public.delivery_order_items where delivery_order_id = p_order_id and coalesce(is_deleted, false) = false
     loop
       select * into v_product
       from public.products
@@ -488,7 +500,10 @@ begin
       );
     end loop;
 
-    delete from public.delivery_orders where id = p_order_id;
+    update public.delivery_order_items
+    set is_deleted = true,
+        deleted_at = now()
+    where delivery_order_id = p_order_id and coalesce(is_deleted, false) = false;
   end if;
 
   v_order_no := nullif(btrim(coalesce(p_order_no, '')), '');
@@ -498,10 +513,31 @@ begin
 
   perform pg_advisory_xact_lock(hashtext('delivery_order_save_' || v_order_no));
 
-  if exists (select 1 from public.delivery_orders where order_no = v_order_no) then
+  if exists (
+    select 1
+    from public.delivery_orders
+    where order_no = v_order_no
+      and (p_order_id is null or id <> p_order_id)
+  ) then
     raise exception '订单号已存在：%', v_order_no using errcode = '23505';
   end if;
 
+  if p_order_id is not null then
+    v_order_id := p_order_id;
+    update public.delivery_orders
+    set order_no = v_order_no,
+        customer_id = p_customer_id,
+        customer_name = coalesce(nullif(p_customer_name, ''), v_customer_name),
+        order_type = p_order_type,
+        status = 'saved',
+        delivery_date = p_delivery_date,
+        operator = p_operator,
+        remark = nullif(p_remark, ''),
+        is_deleted = false,
+        deleted_at = null,
+        deleted_by = null
+    where id = p_order_id;
+  else
   insert into public.delivery_orders (
     order_no, customer_id, customer_name, order_type, status,
     delivery_date, operator, remark
@@ -511,6 +547,7 @@ begin
     p_order_type, 'saved', p_delivery_date, p_operator, nullif(p_remark, '')
   )
   returning id into v_order_id;
+  end if;
 
   for v_item in select * from jsonb_array_elements(p_items)
   loop
@@ -589,7 +626,7 @@ declare
 begin
   select * into v_order
   from public.delivery_orders
-  where id = p_order_id
+  where id = p_order_id and deleted_at is null and status = 'saved'
   for update;
 
   if v_order.id is null then
@@ -636,7 +673,12 @@ begin
     );
   end loop;
 
-  delete from public.delivery_orders where id = p_order_id;
+  update public.delivery_orders
+  set status = 'deleted',
+      is_deleted = true,
+      deleted_at = now(),
+      deleted_by = p_operator
+  where id = p_order_id;
 end;
 $$;
 

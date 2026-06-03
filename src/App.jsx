@@ -341,6 +341,15 @@ function matchesQuery(row, query, fields) {
   return fields.some((field) => String(row[field] || '').toLowerCase().includes(keyword));
 }
 
+function normalizeVisibleOrders(orders = []) {
+  return orders
+    .filter((order) => order.status !== 'deleted' && !order.deleted_at && !order.is_deleted)
+    .map((order) => ({
+      ...order,
+      delivery_order_items: (order.delivery_order_items || []).filter((item) => !item.is_deleted && !item.deleted_at),
+    }));
+}
+
 function nextSkuPreview(products) {
   const maxSkuNumber = products.reduce((max, product) => {
     const match = String(product.sku || '').match(/^P(\d+)$/);
@@ -508,11 +517,13 @@ function ErpApp({ currentUser, onLogout }) {
       supabase
         .from('stock_logs')
         .select('*, products(name, sku, unit, category_id, category_name)')
+        .eq('is_deleted', false)
         .order('created_at', { ascending: false })
         .limit(5000),
       supabase
         .from('delivery_orders')
         .select('*, delivery_order_items(*)')
+        .is('deleted_at', null)
         .order('created_at', { ascending: false }),
       supabase
         .from('company_profile')
@@ -542,11 +553,28 @@ function ErpApp({ currentUser, onLogout }) {
       setCustomers(customersResult.data || []);
       setSuppliers(suppliersResult.data || []);
       setLogs(logsResult.data || []);
-      setOrders(ordersResult.data || []);
+      setOrders(normalizeVisibleOrders(ordersResult.data || []));
       setCompanyProfiles(companyProfilesResult.data || []);
       setUsers(usersResult.data || []);
     }
     setLoading(false);
+  }
+
+  async function refreshDeliveryOrders({ showSuccess = false } = {}) {
+    const { data, error } = await supabase
+      .from('delivery_orders')
+      .select('*, delivery_order_items(*)')
+      .is('deleted_at', null)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      setToast({ type: 'error', text: error.message });
+      return false;
+    }
+
+    setOrders(normalizeVisibleOrders(data || []));
+    if (showSuccess) setToast({ type: 'success', text: '送货管理列表已刷新。' });
+    return true;
   }
 
   useEffect(() => {
@@ -1068,6 +1096,7 @@ function ErpApp({ currentUser, onLogout }) {
               onEdit={(order) => setDeliveryModal(normalizeOrderForEdit(order))}
               onDelete={deleteDeliveryOrder}
               onPrint={setPrintOrder}
+              onRefresh={() => refreshDeliveryOrders({ showSuccess: true })}
             />
           )}
           {activeTab === 'inventory' && (
@@ -1791,11 +1820,13 @@ function StockBusinessCard({ action, partnerLabel, partners, products, categorie
   );
 }
 
-function DeliveryManagementView({ orders, customers, products, canMutate, canDelete, onCreate, onEdit, onDelete, onPrint }) {
+function DeliveryManagementView({ orders, customers, products, canMutate, canDelete, onCreate, onEdit, onDelete, onPrint, onRefresh }) {
   const [query, setQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
   const [page, setPage] = useState(1);
+  const [refreshing, setRefreshing] = useState(false);
   const rows = orders
+    .filter((order) => order.status !== 'deleted' && !order.deleted_at && !order.is_deleted)
     .filter((order) => ['sale_out', 'sale_return'].includes(order.order_type || 'sale_out'))
     .filter((order) => (typeFilter ? (order.order_type || 'sale_out') === typeFilter : true))
     .filter((order) => matchesQuery(order, query, ['order_no', 'customer_name', 'operator']))
@@ -1809,17 +1840,29 @@ function DeliveryManagementView({ orders, customers, products, canMutate, canDel
     setPage(1);
   }, [query, typeFilter]);
 
+  async function handleRefresh() {
+    setRefreshing(true);
+    try {
+      await onRefresh?.();
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
   return (
     <Panel
       title="送货管理"
       subtitle="销售出库和销售退货统一使用送货单模式，保存后自动更新库存并写入库存流水。"
       icon={Truck}
-      action={canMutate ? (
+      action={(
         <div className="flex flex-col gap-2 sm:flex-row">
-          <button className="btn-primary" onClick={() => onCreate('sale_out')}><Plus size={16} />销售出库</button>
-          <button className="btn-secondary" onClick={() => onCreate('sale_return')}><Plus size={16} />销售退货</button>
+          <button className="btn-secondary" type="button" onClick={handleRefresh} disabled={refreshing}>
+            {refreshing ? '刷新中...' : '刷新'}
+          </button>
+          {canMutate && <button className="btn-primary" onClick={() => onCreate('sale_out')}><Plus size={16} />销售出库</button>}
+          {canMutate && <button className="btn-secondary" onClick={() => onCreate('sale_return')}><Plus size={16} />销售退货</button>}
         </div>
-      ) : null}
+      )}
     >
       <div className="grid gap-3 md:grid-cols-[1fr_180px]">
         <SearchBox value={query} onChange={setQuery} placeholder="按单号、客户名称或制单人搜索" />
