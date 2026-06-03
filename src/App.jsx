@@ -246,7 +246,7 @@ function getLogoWidth(settings) {
 
 function getPrintClass(settings) {
   const normalized = normalizePrintSettings(settings);
-  return `delivery-print paper-${normalized.paperType} print-${normalized.orientation}${normalized.hideAmounts ? ' print-hide-amounts' : ''}`;
+  return `delivery-print print-page paper-${normalized.paperType} print-${normalized.orientation}${normalized.hideAmounts ? ' print-hide-amounts' : ''}`;
 }
 
 function getPdfOrientation(settings) {
@@ -2598,7 +2598,7 @@ function DeliveryOrderModal({ initialOrder, customers, products, onClose, onSave
   );
 }
 
-function PrintSettingsPanel({ printSettings, setPrintSettings, exportPdf, onClose }) {
+function PrintSettingsPanel({ printSettings, setPrintSettings, exportPdf, onPrint, onClose }) {
   const updateSetting = (key, value) => setPrintSettings(normalizePrintSettings({ ...printSettings, [key]: value }));
 
   return (
@@ -2641,7 +2641,7 @@ function PrintSettingsPanel({ printSettings, setPrintSettings, exportPdf, onClos
       </label>
       <div className="flex flex-wrap items-end justify-end gap-2">
         <button className="btn-secondary" onClick={exportPdf}><FileDown size={16} />导出 PDF</button>
-        <button className="btn-primary" onClick={() => window.print()}><Printer size={16} />打印</button>
+        <button className="btn-primary" onClick={onPrint}><Printer size={16} />打印</button>
         <button className="btn-secondary" onClick={onClose}><X size={16} />关闭</button>
       </div>
     </div>
@@ -2706,10 +2706,15 @@ function DeliveryPrintModal({ order, companyProfile, onClose }) {
     pdf.save(`${SYSTEM_NAME}-送货单-${order.order_no}.pdf`);
   }
 
+  function printDocument() {
+    syncPrintCopies(printRef, printSettings);
+    window.requestAnimationFrame(() => window.print());
+  }
+
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/50 p-4 print:static print:bg-white print:p-0">
       <div className="mx-auto max-w-6xl rounded-lg bg-white p-4 shadow-xl print:max-w-none print:rounded-none print:p-0 print:shadow-none">
-        <PrintSettingsPanel printSettings={printSettings} setPrintSettings={setPrintSettings} exportPdf={exportPdf} onClose={onClose} />
+        <PrintSettingsPanel printSettings={printSettings} setPrintSettings={setPrintSettings} exportPdf={exportPdf} onPrint={printDocument} onClose={onClose} />
         <article ref={printRef} className={getPrintClass(printSettings)}>
           <section className="delivery-copy delivery-copy-source">
           <header className="delivery-header">
@@ -2894,10 +2899,15 @@ function StockDocumentPrintModal({ title, type, logs, companyProfile, onClose })
     pdf.save(`${SYSTEM_NAME}-${title}-${compactTimestamp()}.pdf`);
   }
 
+  function printDocument() {
+    syncPrintCopies(printRef, printSettings);
+    window.requestAnimationFrame(() => window.print());
+  }
+
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/50 p-4 print:static print:bg-white print:p-0">
       <div className="mx-auto max-w-6xl rounded-lg bg-white p-4 shadow-xl print:max-w-none print:rounded-none print:p-0 print:shadow-none">
-        <PrintSettingsPanel printSettings={printSettings} setPrintSettings={setPrintSettings} exportPdf={exportPdf} onClose={onClose} />
+        <PrintSettingsPanel printSettings={printSettings} setPrintSettings={setPrintSettings} exportPdf={exportPdf} onPrint={printDocument} onClose={onClose} />
 
         <article ref={printRef} className={getPrintClass(printSettings)}>
           <section className="delivery-copy delivery-copy-source">
