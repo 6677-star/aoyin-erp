@@ -1877,11 +1877,6 @@ function StockBusinessCard({ action, partnerLabel, partners, products, categorie
       window.alert('数量必须大于 0。');
       return;
     }
-    if (action.direction === 'decrease' && product && Number(product.quantity) < Number(quantity)) {
-      window.alert('库存不足，禁止出库。');
-      return;
-    }
-
     const operatorRemark = [
       `${partnerLabel}: ${partner?.name || ''}`,
       `日期: ${stockDate}`,

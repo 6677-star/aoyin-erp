@@ -6,7 +6,7 @@ create table if not exists public.products (
   sku text not null unique,
   category_id bigint,
   category_name text,
-  quantity integer not null default 0 check (quantity >= 0),
+  quantity integer not null default 0,
   unit text not null default 'pcs',
   cost_price numeric(12, 2) not null default 0,
   sell_price numeric(12, 2) not null default 0,
@@ -341,10 +341,6 @@ begin
     else 0
   end;
 
-  if current_qty + signed_delta < 0 then
-    raise exception 'Insufficient stock';
-  end if;
-
   next_qty := current_qty + signed_delta;
 
   update public.products
@@ -485,10 +481,6 @@ begin
       v_before_qty := v_product.quantity;
       v_after_qty := v_before_qty + v_delta;
 
-      if v_after_qty < 0 then
-        raise exception '恢复旧单据库存失败，商品 % 库存不足', v_product.name;
-      end if;
-
       update public.products set quantity = v_after_qty where id = v_product.id;
 
       insert into public.stock_logs (
@@ -576,10 +568,6 @@ begin
     v_before_qty := v_product.quantity;
     v_after_qty := v_before_qty + v_delta;
 
-    if v_after_qty < 0 then
-      raise exception '商品 % 库存不足，当前库存 %，出库数量 %', v_product.name, v_before_qty, v_quantity_int;
-    end if;
-
     insert into public.delivery_order_items (
       delivery_order_id, product_id, product_sku, product_name, spec,
       unit, quantity, price, amount, remark
@@ -657,10 +645,6 @@ begin
     v_delta := case when v_order.order_type = 'sale_out' then v_quantity_int else -v_quantity_int end;
     v_before_qty := v_product.quantity;
     v_after_qty := v_before_qty + v_delta;
-
-    if v_after_qty < 0 then
-      raise exception '删除该销售退货单会导致商品 % 库存小于 0，已取消删除', v_product.name;
-    end if;
 
     update public.products set quantity = v_after_qty where id = v_product.id;
 

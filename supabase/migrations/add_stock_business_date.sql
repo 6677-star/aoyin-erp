@@ -43,10 +43,6 @@ begin
     else 0
   end;
 
-  if current_qty + signed_delta < 0 then
-    raise exception 'Insufficient stock';
-  end if;
-
   next_qty := current_qty + signed_delta;
 
   update public.products
