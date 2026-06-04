@@ -940,13 +940,14 @@ function ErpApp({ currentUser, onLogout }) {
     }, nextStatus === 'active' ? '用户已启用。' : '用户已禁用。');
   }
 
-  async function moveStock({ productId, type, quantity, operatorRemark }) {
+  async function moveStock({ productId, type, quantity, operatorRemark, stockDate }) {
     const { error } = await supabase.rpc('move_stock', {
       p_product_id: productId,
       p_type: type,
       p_quantity: Number(quantity),
       p_operator: operator,
       p_remark: operatorRemark || null,
+      p_stock_date: stockDate || null,
     });
     if (error) throw error;
   }
@@ -1183,7 +1184,7 @@ function ErpApp({ currentUser, onLogout }) {
               categories={categories}
               logs={logs}
               canSubmit={can(currentUser, 'purchaseStock')}
-              onPrint={() => setPrintStockDocument({ title: '采购入库单', type: 'purchase_in' })}
+              onPrint={(document) => setPrintStockDocument(document)}
               onSubmit={(payload) => runAction(() => moveStock(payload), '库存已更新，采购流水已写入。')}
             />
           )}
@@ -1792,8 +1793,8 @@ function PurchaseSalesView({ mode, partners, products, categories = [], logs = [
   const icon = isPurchase ? PackagePlus : PackageMinus;
   const actions = isPurchase
     ? [
-        { type: 'purchase_in', title: '采购入库', direction: 'increase', priceField: 'cost_price' },
-        { type: 'purchase_return', title: '采购退货', direction: 'decrease', priceField: 'cost_price' },
+        { type: 'purchase_in', title: '采购入库', printTitle: '采购入库单', direction: 'increase', priceField: 'cost_price' },
+        { type: 'purchase_return', title: '采购退货', printTitle: '采购退货单', direction: 'decrease', priceField: 'cost_price' },
       ]
     : [
         { type: 'sale_out', title: '销售出库', direction: 'decrease', priceField: 'sell_price' },
@@ -1805,7 +1806,18 @@ function PurchaseSalesView({ mode, partners, products, categories = [], logs = [
       title={title}
       subtitle="所有操作都会同步更新库存，并写入库存流水。"
       icon={icon}
-      action={<button className="btn-secondary" onClick={onPrint}><Printer size={16} />打印{isPurchase ? '采购入库单' : '销售出库单'}</button>}
+      action={isPurchase ? (
+        <div className="flex flex-wrap gap-2">
+          {actions.map((action) => (
+            <button key={action.type} className="btn-secondary" onClick={() => onPrint({ title: action.printTitle, type: action.type })}>
+              <Printer size={16} />
+              打印{action.printTitle}
+            </button>
+          ))}
+        </div>
+      ) : (
+        <button className="btn-secondary" onClick={onPrint}><Printer size={16} />打印销售出库单</button>
+      )}
     >
       {canSubmit ? (
         <div className="grid gap-4 xl:grid-cols-2">
@@ -1837,6 +1849,7 @@ function StockBusinessCard({ action, partnerLabel, partners, products, categorie
   const [partnerId, setPartnerId] = useState('');
   const [categoryId, setCategoryId] = useState('');
   const [productId, setProductId] = useState('');
+  const [stockDate, setStockDate] = useState(todayDate());
   const [quantity, setQuantity] = useState(1);
   const [price, setPrice] = useState(0);
   const [remark, setRemark] = useState('');
@@ -1871,12 +1884,14 @@ function StockBusinessCard({ action, partnerLabel, partners, products, categorie
 
     const operatorRemark = [
       `${partnerLabel}: ${partner?.name || ''}`,
+      `日期: ${stockDate}`,
       `单价: ${formatMoney(price)}`,
       remark ? `备注: ${remark}` : '',
     ].filter(Boolean).join('；');
 
-    onSubmit({ productId, type: action.type, quantity, operatorRemark });
+    onSubmit({ productId, type: action.type, quantity, operatorRemark, stockDate });
     setQuantity(1);
+    setStockDate(todayDate());
     setRemark('');
   }
 
@@ -1892,6 +1907,9 @@ function StockBusinessCard({ action, partnerLabel, partners, products, categorie
             <option value="">请选择</option>
             {partners.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
           </select>
+        </Field>
+        <Field label="日期">
+          <input className="input" type="date" value={stockDate} onChange={(event) => setStockDate(event.target.value)} required />
         </Field>
         <Field label="商品">
           <select className="input mb-2" value={categoryId} onChange={(event) => {
@@ -2832,6 +2850,7 @@ function StockDocumentPrintModal({ title, type, logs, companyProfile, onClose })
   const [qrDataUrl, setQrDataUrl] = useState('');
   const logoWidth = getLogoWidth(printSettings);
   const rows = logs.filter((log) => log.type === type);
+  const documentDate = rows[0]?.created_at ? new Date(rows[0].created_at).toISOString().slice(0, 10) : todayDate();
   const items = rows.map((log) => {
     const parsed = parseLogRemark(log.remark);
     const quantity = Number(log.quantity || 0);
@@ -2932,7 +2951,7 @@ function StockDocumentPrintModal({ title, type, logs, companyProfile, onClose })
             </div>
             <div className="delivery-meta">
               <p>制 单 人：系统管理员</p>
-              <p>打印日期：{todayDate()}</p>
+              <p>日期：{documentDate}</p>
             </div>
           </header>
 

@@ -301,7 +301,8 @@ create or replace function public.move_stock(
   p_type text,
   p_quantity integer,
   p_operator text,
-  p_remark text default null
+  p_remark text default null,
+  p_stock_date date default null
 )
 returns void
 language plpgsql
@@ -361,7 +362,8 @@ begin
     before_qty,
     after_qty,
     operator,
-    remark
+    remark,
+    created_at
   )
   values (
     p_product_id,
@@ -374,12 +376,14 @@ begin
     current_qty,
     next_qty,
     p_operator,
-    p_remark
+    p_remark,
+    coalesce(p_stock_date, current_date)::timestamptz
   );
 end;
 $$;
 
 grant execute on function public.move_stock(bigint, text, integer, text, text) to authenticated;
+grant execute on function public.move_stock(bigint, text, integer, text, text, date) to authenticated;
 
 create or replace function public.next_delivery_order_no()
 returns text
